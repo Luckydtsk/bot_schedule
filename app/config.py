@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,4 +11,15 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
     calendar_host: str = "0.0.0.0"
     calendar_port: int = Field(default=8080, ge=1, le=65535)
+    port: int | None = Field(default=None, ge=1, le=65535)
     calendar_base_url: str | None = None
+
+    @field_validator("calendar_base_url", mode="before")
+    @classmethod
+    def normalize_calendar_base_url(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        text = str(value).strip().rstrip("/")
+        if not text.startswith("https://"):
+            raise ValueError("CALENDAR_BASE_URL must use HTTPS")
+        return text

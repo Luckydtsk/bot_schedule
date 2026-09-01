@@ -53,14 +53,18 @@ async def run() -> None:
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(users, schedules, timezone, updater, calendars))
-    calendar_runner = web.AppRunner(create_calendar_app(calendars))
+    calendar_runner = web.AppRunner(create_calendar_app(calendars), access_log=None)
     await calendar_runner.setup()
     calendar_site = web.TCPSite(
-        calendar_runner, host=settings.calendar_host, port=settings.calendar_port
+        calendar_runner,
+        host=settings.calendar_host,
+        port=settings.port or settings.calendar_port,
     )
     await calendar_site.start()
     logging.info(
-        "Calendar endpoint listening on %s:%s", settings.calendar_host, settings.calendar_port
+        "Calendar endpoint listening on %s:%s",
+        settings.calendar_host,
+        settings.port or settings.calendar_port,
     )
     task = asyncio.create_task(updater.run(settings.check_interval_seconds))
     try:

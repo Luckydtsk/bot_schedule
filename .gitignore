@@ -3,6 +3,7 @@
 .uv-cache/
 __pycache__/
 .pytest_cache/
+.test-tmp*/
 .tmp/
 .coverage
 htmlcov/

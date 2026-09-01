@@ -52,6 +52,28 @@ async def test_calendar_token_is_stable_and_private(db):
     assert await repo.user_by_calendar_token("unknown") is None
 
 
+async def test_calendar_tokens_are_unique_and_can_be_regenerated(db):
+    repo = UserRepository(db.sessions)
+    await repo.save(10, 4, "G1")
+    await repo.save(11, 4, "G1")
+    first = await repo.calendar_token(10)
+    second = await repo.calendar_token(11)
+    assert first != second
+    replacement = await repo.regenerate_calendar_token(10)
+    assert replacement != first
+    assert await repo.user_by_calendar_token(first) is None
+    assert (await repo.user_by_calendar_token(replacement)).telegram_id == 10
+
+
+async def test_group_change_preserves_calendar_token(db):
+    repo = UserRepository(db.sessions)
+    await repo.save(10, 4, "G1")
+    token = await repo.calendar_token(10)
+    await repo.save(10, 3, "G2")
+    assert await repo.calendar_token(10) == token
+    assert (await repo.user_by_calendar_token(token)).group_name == "G2"
+
+
 async def test_hidden_subjects_toggle_and_reset(db):
     repo = UserRepository(db.sessions)
     await repo.save(10, 4, "G1")

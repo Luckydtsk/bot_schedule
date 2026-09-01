@@ -104,6 +104,47 @@ def build_router(
             reply_markup=inline(items),
         )
 
+    async def show_profile(message: Message, telegram_id: int) -> None:
+        user = await users.get(telegram_id)
+        if not user:
+            await choose_course(message)
+            return
+        state = "включены" if user.notifications_enabled else "выключены"
+        keyboard = inline(
+            [
+                ("Сменить группу", "settings:group"),
+                ("Мои предметы", "settings:subjects"),
+                (f"Уведомления: {state}", "settings:notify"),
+                ("📅 Календарь", "settings:calendar"),
+                ("Обновить расписание", "settings:update"),
+            ]
+        )
+        await message.answer(
+            f"ПРОФИЛЬ\n\nГруппа: {user.group_name}\nУведомления: {state}",
+            reply_markup=keyboard,
+        )
+
+    async def show_calendar_menu(message: Message, telegram_id: int) -> None:
+        if await users.get(telegram_id) is None:
+            await choose_course(message)
+            return
+        keyboard = inline(
+            [
+                ("🔗 Получить ссылку", "calendar:url"),
+                ("📎 Скачать .ics", "calendar:download"),
+                ("❓ Как добавить", "calendar:help"),
+                ("🔄 Сменить ссылку", "calendar:rotate"),
+                ("⬅️ Назад", "calendar:back"),
+            ]
+        )
+        await message.answer(
+            "📅 <b>Подписка на расписание</b>\n\n"
+            "Добавь этот календарь один раз — дальше изменения расписания будут "
+            "автоматически появляться в нём.\n\n"
+            "Подписка по ссылке обновляется автоматически. Скачанный файл — разовый снимок.",
+            reply_markup=keyboard,
+        )
+
     @router.message(Command("start"))
     async def start(message: Message) -> None:
         user = await users.get(message.from_user.id) if message.from_user else None
@@ -187,24 +228,8 @@ def build_router(
     @router.message(Command("settings"))
     @router.message(F.text.in_({"⚙️ Настройки", "Профиль"}))
     async def settings(message: Message) -> None:
-        user = await users.get(message.from_user.id) if message.from_user else None
-        if not user:
-            await choose_course(message)
-            return
-        state = "включены" if user.notifications_enabled else "выключены"
-        keyboard = inline(
-            [
-                ("Сменить группу", "settings:group"),
-                ("Мои предметы", "settings:subjects"),
-                (f"Уведомления: {state}", "settings:notify"),
-                ("Календарь", "settings:calendar"),
-                ("Обновить расписание", "settings:update"),
-            ]
-        )
-        await message.answer(
-            f"ПРОФИЛЬ\n\nГруппа: {user.group_name}\nУведомления: {state}",
-            reply_markup=keyboard,
-        )
+        if message.from_user:
+            await show_profile(message, message.from_user.id)
 
     @router.callback_query(F.data == "settings:group")
     async def change_group(callback: CallbackQuery) -> None:
@@ -277,33 +302,112 @@ def build_router(
             await callback.message.answer("Календарь временно недоступен.")
             await callback.answer()
             return
+        await show_calendar_menu(callback.message, callback.from_user.id)
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:url")
+    async def calendar_url(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        if calendars is None:
+            await callback.message.answer("Подписка временно недоступна.")
+            await callback.answer()
+            return
+        user = await users.get(callback.from_user.id)
+        if user is None:
+            await choose_course(callback.message)
+            await callback.answer()
+            return
+        url = await calendars.subscription_url(callback.from_user.id)
+        if url is None:
+            await callback.message.answer(
+                "Подписка пока не настроена на сервере. Укажи HTTPS-адрес сервиса в "
+                "CALENDAR_BASE_URL. Остальные функции бота продолжают работать."
+            )
+        else:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", url=url)]]
+            )
+            await callback.message.answer(
+                "Твоя персональная ссылка:\n\n"
+                f"{url}\n\n"
+                "Не пересылай её другим: любой владелец ссылки увидит расписание.",
+                reply_markup=keyboard,
+            )
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:download")
+    async def calendar_download(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        if calendars is None:
+            await callback.message.answer("Календарь временно недоступен.")
+            await callback.answer()
+            return
         exported = await calendars.export_for_user(callback.from_user.id)
         if exported is None:
             await callback.message.answer("Сначала выбери группу.")
             await callback.answer()
             return
         group_name, content = exported
-        url = await calendars.subscription_url(callback.from_user.id)
-        if url:
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", url=url)]]
-            )
-            text = (
-                "КАЛЕНДАРЬ РАСПИСАНИЯ\n\n"
-                "Для автоматических обновлений добавь эту ссылку как календарь по URL:\n"
-                f"{url}\n\n"
-                "Ссылка личная — не пересылай её другим."
-            )
-            await callback.message.answer(text, reply_markup=keyboard)
-        else:
-            await callback.message.answer(
-                "Отправляю файл для импорта. Автоподписка появится после настройки "
-                "CALENDAR_BASE_URL на сервере."
-            )
         await callback.message.answer_document(
             BufferedInputFile(content, filename=f"schedule-{group_name}.ics"),
-            caption="Импортируй файл в Apple Calendar, Google Calendar или Outlook.",
+            caption=(
+                "Это разовый снимок расписания. Он сам не обновляется. "
+                "Для автоматических изменений используй подписку по ссылке."
+            ),
         )
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:help")
+    async def calendar_help(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        await callback.message.answer(
+            "<b>Google Calendar</b>\n"
+            "1. Открой Google Calendar в браузере.\n"
+            "2. Слева выбери «Другие календари» → «+».\n"
+            "3. Нажми «Добавить по URL» и вставь персональную ссылку.\n\n"
+            "Google сам выбирает частоту обновления; изменения могут появляться с задержкой.\n\n"
+            "<b>iPhone / iPad</b>\n"
+            "Календарь → Календари → Добавить календарь → Добавить календарь подписки.\n\n"
+            "<b>macOS</b>\n"
+            "Календарь → Файл → Новая подписка на календарь."
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:rotate")
+    async def calendar_rotate(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        keyboard = inline(
+            [
+                ("Да, сменить ссылку", "calendar:rotate:confirm"),
+                ("Отмена", "settings:calendar"),
+            ]
+        )
+        await callback.message.answer(
+            "Старая ссылка сразу перестанет работать. Подписку в календаре придётся "
+            "удалить и добавить заново. Сменить ссылку?",
+            reply_markup=keyboard,
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:rotate:confirm")
+    async def calendar_rotate_confirm(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        if calendars is None:
+            await callback.message.answer("Подписка временно недоступна.")
+        else:
+            url = await calendars.regenerate_subscription_url(callback.from_user.id)
+            if url is None:
+                await callback.message.answer("Сначала настрой CALENDAR_BASE_URL.")
+            else:
+                await callback.message.answer(
+                    f"Ссылка изменена. Старый адрес больше не работает.\n\n{url}"
+                )
+        await callback.answer()
+
+    @router.callback_query(F.data == "calendar:back")
+    async def calendar_back(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        await show_profile(callback.message, callback.from_user.id)
         await callback.answer()
 
     return router

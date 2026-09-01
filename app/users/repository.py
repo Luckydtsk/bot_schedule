@@ -80,6 +80,18 @@ class UserRepository:
                 await session.commit()
             return row.token
 
+    async def regenerate_calendar_token(self, telegram_id: int) -> str:
+        async with self.sessions() as session:
+            row = await session.get(CalendarSubscriptionRow, telegram_id)
+            token = secrets.token_urlsafe(32)
+            if row is None:
+                row = CalendarSubscriptionRow(telegram_id=telegram_id, token=token)
+                session.add(row)
+            else:
+                row.token = token
+            await session.commit()
+            return token
+
     async def user_by_calendar_token(self, token: str) -> User | None:
         async with self.sessions() as session:
             subscription = await session.scalar(
