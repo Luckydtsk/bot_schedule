@@ -108,7 +108,7 @@ def build_router(
             rows.append(navigation)
         rows.append([InlineKeyboardButton(text="Показывать всё", callback_data="subjects:reset")])
         await message.edit_text(
-            "МОИ ПРЕДМЕТЫ\n\n"
+            "<b>Мои предметы</b>\n\n"
             "✓ показывается\n"
             "— скрыт\n\n"
             "Нажми на дисциплину, чтобы изменить её. "
@@ -132,7 +132,7 @@ def build_router(
         items = [(program, f"program:{program}") for program in programs()]
         items.append(("‹ Назад", "education:back"))
         await message.edit_text(
-            "БАКАЛАВРИАТ\n\nВыбери образовательную программу:",
+            "<b>Бакалавриат</b>\n\nВыбери образовательную программу:",
             reply_markup=inline(items),
         )
 
@@ -152,7 +152,7 @@ def build_router(
             ]
         )
         await message.answer(
-            f"ПРОФИЛЬ\n\nГруппа: {user.group_name}\nУведомления: {state}",
+            f"<b>Профиль</b>\n\nГруппа: {user.group_name}\nУведомления: {state}",
             reply_markup=keyboard,
         )
 
@@ -198,7 +198,7 @@ def build_router(
     async def master(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
         await callback.message.edit_text(
-            "МАГИСТРАТУРА\n\nРасписание магистратуры скоро появится.",
+            "<b>Магистратура</b>\n\nРасписание магистратуры скоро появится.",
             reply_markup=inline([("‹ Назад", "education:back")]),
         )
         await callback.answer()
@@ -218,7 +218,7 @@ def build_router(
         ]
         items.append(("‹ Назад", "education:bachelor"))
         await callback.message.edit_text(
-            f"ПРОГРАММА {value}\n\nВыбери курс:",
+            f"<b>Программа {value}</b>\n\nВыбери курс:",
             reply_markup=inline(items),
         )
         await callback.answer()
