@@ -1,0 +1,14 @@
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    bot_token: str = Field(min_length=1)
+    yandex_public_url: str = "https://disk.360.yandex.ru/d/At7POE_VL0oNiA"
+    timezone: str = "Asia/Yekaterinburg"
+    check_interval_seconds: int = Field(default=300, ge=30)
+    database_url: str = "sqlite+aiosqlite:///./data/bot.db"
+    calendar_host: str = "0.0.0.0"
+    calendar_port: int = Field(default=8080, ge=1, le=65535)
+    calendar_base_url: str | None = None
