@@ -55,10 +55,31 @@ def build_router(
     def subject_key(subject: str) -> str:
         return hashlib.sha256(subject.encode()).hexdigest()[:12]
 
+    def program_for_group(group: str) -> str:
+        return group.split("-", 1)[0].strip()
+
+    def programs() -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    program_for_group(group)
+                    for groups in schedules.schedule.courses.values()
+                    for group in groups
+                }
+            )
+        )
+
+    def program_courses(program: str) -> tuple[int, ...]:
+        return tuple(
+            course
+            for course, groups in sorted(schedules.schedule.courses.items())
+            if any(program_for_group(group) == program for group in groups)
+        )
+
     async def show_subjects(message: Message, telegram_id: int, page: int = 0) -> None:
         user = await users.get(telegram_id)
         if user is None:
-            await choose_course(message)
+            await choose_education(message)
             return
         subjects = subject_catalog(user.group_name)
         hidden = await users.hidden_subjects(telegram_id)
@@ -95,19 +116,30 @@ def build_router(
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
-    async def choose_course(message: Message) -> None:
-        items = [
-            (f"{course} курс", f"course:{course}") for course in sorted(schedules.schedule.courses)
-        ]
+    async def choose_education(message: Message) -> None:
         await message.answer(
-            "Бот расписания\n\nПокажу пары и сообщу, если что-то изменится.\n\nВыбери курс:",
+            "Бот расписания\n\nПокажу пары и сообщу, если что-то изменится.\n\n"
+            "Выбери уровень образования:",
+            reply_markup=inline(
+                [
+                    ("Бакалавриат", "education:bachelor"),
+                    ("Магистратура", "education:master"),
+                ]
+            ),
+        )
+
+    async def choose_program(message: Message) -> None:
+        items = [(program, f"program:{program}") for program in programs()]
+        items.append(("‹ Назад", "education:back"))
+        await message.edit_text(
+            "БАКАЛАВРИАТ\n\nВыбери образовательную программу:",
             reply_markup=inline(items),
         )
 
     async def show_profile(message: Message, telegram_id: int) -> None:
         user = await users.get(telegram_id)
         if not user:
-            await choose_course(message)
+            await choose_education(message)
             return
         state = "включены" if user.notifications_enabled else "выключены"
         keyboard = inline(
@@ -126,7 +158,7 @@ def build_router(
 
     async def show_calendar_menu(message: Message, telegram_id: int) -> None:
         if await users.get(telegram_id) is None:
-            await choose_course(message)
+            await choose_education(message)
             return
         keyboard = inline(
             [
@@ -154,16 +186,56 @@ def build_router(
                 reply_markup=MAIN,
             )
         else:
-            await choose_course(message)
+            await choose_education(message)
+
+    @router.callback_query(F.data == "education:bachelor")
+    async def bachelor(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        await choose_program(callback.message)
+        await callback.answer()
+
+    @router.callback_query(F.data == "education:master")
+    async def master(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        await callback.message.edit_text(
+            "МАГИСТРАТУРА\n\nРасписание магистратуры скоро появится.",
+            reply_markup=inline([("‹ Назад", "education:back")]),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "education:back")
+    async def education_back(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        await choose_education(callback.message)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("program:"))
+    async def program(callback: CallbackQuery) -> None:
+        assert callback.data is not None and isinstance(callback.message, Message)
+        value = callback.data.split(":", 1)[1]
+        items = [
+            (f"{course} курс", f"course:{value}:{course}") for course in program_courses(value)
+        ]
+        items.append(("‹ Назад", "education:bachelor"))
+        await callback.message.edit_text(
+            f"ПРОГРАММА {value}\n\nВыбери курс:",
+            reply_markup=inline(items),
+        )
+        await callback.answer()
 
     @router.callback_query(F.data.startswith("course:"))
     async def course(callback: CallbackQuery) -> None:
         assert callback.data is not None and isinstance(callback.message, Message)
-        value = int(callback.data.split(":", 1)[1])
-        groups = schedules.groups(value)
+        _, program_name, course_raw = callback.data.split(":", 2)
+        value = int(course_raw)
+        groups = tuple(
+            group for group in schedules.groups(value) if program_for_group(group) == program_name
+        )
+        items = [(group, f"group:{value}:{group}") for group in groups]
+        items.append(("‹ Назад", f"program:{program_name}"))
         await callback.message.edit_text(
             "Теперь выбери группу:",
-            reply_markup=inline([(x, f"group:{value}:{x}") for x in groups]),
+            reply_markup=inline(items),
         )
         await callback.answer()
 
@@ -184,7 +256,7 @@ def build_router(
     async def show(message: Message, offset: int | None) -> None:
         user = await users.get(message.from_user.id) if message.from_user else None
         if not user:
-            await choose_course(message)
+            await choose_education(message)
             return
         today = datetime.now(timezone).date()
         lessons = (
@@ -234,7 +306,7 @@ def build_router(
     @router.callback_query(F.data == "settings:group")
     async def change_group(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        await choose_course(callback.message)
+        await choose_education(callback.message)
         await callback.answer()
 
     @router.callback_query(F.data == "settings:notify")
@@ -314,7 +386,7 @@ def build_router(
             return
         user = await users.get(callback.from_user.id)
         if user is None:
-            await choose_course(callback.message)
+            await choose_education(callback.message)
             await callback.answer()
             return
         url = await calendars.subscription_url(callback.from_user.id)
