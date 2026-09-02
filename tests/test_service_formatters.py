@@ -1,7 +1,7 @@
 from datetime import date, time
 
 from app.bot.formatters import format_schedule, split_messages
-from app.schedule.models import Lesson, Schedule
+from app.schedule.models import Lesson, Schedule, merge_schedules
 from app.schedule.service import ScheduleService
 
 
@@ -14,6 +14,19 @@ def test_date_and_week_queries():
     assert service.groups(4) == ("G",)
     assert service.for_date("G", date(2026, 9, 2)) == (lesson(),)
     assert len(service.for_week("G", date(2026, 9, 1))) == 1
+    assert service.available_weeks("G", date(2026, 9, 2)) == (
+        date(2026, 8, 31),
+        date(2026, 9, 7),
+    )
+
+
+def test_week_schedules_are_merged_without_losing_groups():
+    first = Schedule({1: ("G",)}, (lesson(),))
+    second_lesson = lesson(date(2026, 9, 7))
+    second = Schedule({1: ("G", "H")}, (second_lesson,))
+    merged = merge_schedules((first, second))
+    assert merged.courses == {1: ("G", "H")}
+    assert merged.lessons == (lesson(), second_lesson)
 
 
 def test_schedule_format_is_user_friendly():

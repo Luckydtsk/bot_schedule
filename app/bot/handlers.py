@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
@@ -116,17 +118,21 @@ def build_router(
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
-    async def choose_education(message: Message) -> None:
-        await message.answer(
+    async def choose_education(message: Message, *, edit: bool = False) -> None:
+        text = (
             "Бот расписания\n\nПокажу пары и сообщу, если что-то изменится.\n\n"
-            "Выбери уровень образования:",
-            reply_markup=inline(
-                [
-                    ("Бакалавриат", "education:bachelor"),
-                    ("Магистратура", "education:master"),
-                ]
-            ),
+            "Выбери уровень образования:"
         )
+        markup = inline(
+            [
+                ("Бакалавриат", "education:bachelor"),
+                ("Магистратура", "education:master"),
+            ]
+        )
+        if edit:
+            await message.edit_text(text, reply_markup=markup)
+        else:
+            await message.answer(text, reply_markup=markup)
 
     async def choose_program(message: Message) -> None:
         items = [(program, f"program:{program}") for program in programs()]
@@ -136,10 +142,10 @@ def build_router(
             reply_markup=inline(items),
         )
 
-    async def show_profile(message: Message, telegram_id: int) -> None:
+    async def show_profile(message: Message, telegram_id: int, *, edit: bool = False) -> None:
         user = await users.get(telegram_id)
         if not user:
-            await choose_education(message)
+            await choose_education(message, edit=edit)
             return
         state = "включены" if user.notifications_enabled else "выключены"
         keyboard = inline(
@@ -151,14 +157,15 @@ def build_router(
                 ("Обновить расписание", "settings:update"),
             ]
         )
-        await message.answer(
-            f"<b>Профиль</b>\n\nГруппа: {user.group_name}\nУведомления: {state}",
-            reply_markup=keyboard,
-        )
+        text = f"<b>Профиль</b>\n\nГруппа: {user.group_name}\nУведомления: {state}"
+        if edit:
+            await message.edit_text(text, reply_markup=keyboard)
+        else:
+            await message.answer(text, reply_markup=keyboard)
 
     async def show_calendar_menu(message: Message, telegram_id: int) -> None:
         if await users.get(telegram_id) is None:
-            await choose_education(message)
+            await choose_education(message, edit=True)
             return
         keyboard = inline(
             [
@@ -169,7 +176,7 @@ def build_router(
                 ("⬅️ Назад", "calendar:back"),
             ]
         )
-        await message.answer(
+        await message.edit_text(
             "📅 <b>Подписка на расписание</b>\n\n"
             "Добавь этот календарь один раз — дальше изменения расписания будут "
             "автоматически появляться в нём.\n\n"
@@ -206,7 +213,7 @@ def build_router(
     @router.callback_query(F.data == "education:back")
     async def education_back(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        await choose_education(callback.message)
+        await choose_education(callback.message, edit=True)
         await callback.answer()
 
     @router.callback_query(F.data.startswith("program:"))
@@ -245,6 +252,8 @@ def build_router(
         _, course_value, group_name = callback.data.split(":", 2)
         if callback.from_user:
             await users.save(callback.from_user.id, int(course_value), group_name)
+        with contextlib.suppress(TelegramBadRequest):
+            await callback.message.delete()
         await callback.message.answer(
             "Готово.\n\n"
             f"Твоя группа: {group_name}\n"
@@ -282,6 +291,29 @@ def build_router(
                 reply_markup=MAIN if index == len(days) - 1 else None,
             )
 
+    async def send_selected_week(message: Message, telegram_id: int, monday: date) -> None:
+        user = await users.get(telegram_id)
+        if user is None:
+            await choose_education(message)
+            return
+        hidden = await users.hidden_subjects(user.telegram_id)
+        lessons = tuple(
+            lesson
+            for lesson in schedules.for_week(user.group_name, monday)
+            if lesson.subject not in hidden
+        )
+        if not lessons:
+            await message.answer("На эту неделю занятий нет.", reply_markup=MAIN)
+            return
+        days: dict[date, list[Lesson]] = {}
+        for lesson in lessons:
+            days.setdefault(lesson.date, []).append(lesson)
+        for index, (day, day_lessons) in enumerate(days.items()):
+            await message.answer(
+                format_day(day, tuple(day_lessons)),
+                reply_markup=MAIN if index == len(days) - 1 else None,
+            )
+
     @router.message(Command("today"))
     @router.message(F.text == "Сегодня")
     async def today(message: Message) -> None:
@@ -295,28 +327,56 @@ def build_router(
     @router.message(Command("week"))
     @router.message(F.text == "Неделя")
     async def week(message: Message) -> None:
-        await show(message, None)
+        user = await users.get(message.from_user.id) if message.from_user else None
+        if user is None:
+            await choose_education(message)
+            return
+        today = datetime.now(timezone).date()
+        current_monday = today - timedelta(days=today.weekday())
+        weeks = schedules.available_weeks(user.group_name, today)
+        if not weeks:
+            await message.answer("Доступных недель пока нет.", reply_markup=MAIN)
+            return
+        items = []
+        for monday in weeks:
+            sunday = monday + timedelta(days=6)
+            prefix = "Текущая" if monday == current_monday else "Следующая"
+            items.append(
+                (
+                    f"{prefix} · {monday:%d.%m}–{sunday:%d.%m}",
+                    f"week:{monday.isoformat()}",
+                )
+            )
+        await message.answer("Выбери неделю:", reply_markup=inline(items))
+
+    @router.callback_query(F.data.startswith("week:"))
+    async def selected_week(callback: CallbackQuery) -> None:
+        assert callback.data is not None and isinstance(callback.message, Message)
+        monday = date.fromisoformat(callback.data.split(":", 1)[1])
+        with contextlib.suppress(TelegramBadRequest):
+            await callback.message.delete()
+        await send_selected_week(callback.message, callback.from_user.id, monday)
+        await callback.answer()
 
     @router.message(Command("settings"))
     @router.message(F.text.in_({"⚙️ Настройки", "Профиль"}))
     async def settings(message: Message) -> None:
         if message.from_user:
+            with contextlib.suppress(TelegramBadRequest):
+                await message.delete()
             await show_profile(message, message.from_user.id)
 
     @router.callback_query(F.data == "settings:group")
     async def change_group(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        await choose_education(callback.message)
+        await choose_education(callback.message, edit=True)
         await callback.answer()
 
     @router.callback_query(F.data == "settings:notify")
     async def notify(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        user = await users.toggle_notifications(callback.from_user.id)
-        await callback.message.answer(
-            f"Уведомления {'включены' if user and user.notifications_enabled else 'выключены'}",
-            reply_markup=MAIN,
-        )
+        await users.toggle_notifications(callback.from_user.id)
+        await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
 
     @router.callback_query(F.data == "settings:subjects")
@@ -362,8 +422,9 @@ def build_router(
     async def update(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
         changed = await force_update.check() if force_update is not None else False  # type: ignore[attr-defined]
-        await callback.message.answer(
-            "Расписание обновлено" if changed else "У вас уже актуальная версия"
+        await callback.message.edit_text(
+            "Расписание обновлено." if changed else "Расписание уже актуально.",
+            reply_markup=inline([("‹ Назад", "settings:back")]),
         )
         await callback.answer()
 
@@ -371,7 +432,7 @@ def build_router(
     async def calendar(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
         if calendars is None:
-            await callback.message.answer("Календарь временно недоступен.")
+            await callback.message.edit_text("Календарь временно недоступен.")
             await callback.answer()
             return
         await show_calendar_menu(callback.message, callback.from_user.id)
@@ -381,25 +442,29 @@ def build_router(
     async def calendar_url(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
         if calendars is None:
-            await callback.message.answer("Подписка временно недоступна.")
+            await callback.message.edit_text("Подписка временно недоступна.")
             await callback.answer()
             return
         user = await users.get(callback.from_user.id)
         if user is None:
-            await choose_education(callback.message)
+            await choose_education(callback.message, edit=True)
             await callback.answer()
             return
         url = await calendars.subscription_url(callback.from_user.id)
         if url is None:
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "Подписка пока не настроена на сервере. Укажи HTTPS-адрес сервиса в "
-                "CALENDAR_BASE_URL. Остальные функции бота продолжают работать."
+                "CALENDAR_BASE_URL. Остальные функции бота продолжают работать.",
+                reply_markup=inline([("‹ Назад", "settings:calendar")]),
             )
         else:
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", url=url)]]
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Открыть календарь", url=url)],
+                    [InlineKeyboardButton(text="‹ Назад", callback_data="settings:calendar")],
+                ]
             )
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "Твоя персональная ссылка:\n\n"
                 f"{url}\n\n"
                 "Не пересылай её другим: любой владелец ссылки увидит расписание.",
@@ -420,6 +485,8 @@ def build_router(
             await callback.answer()
             return
         group_name, content = exported
+        with contextlib.suppress(TelegramBadRequest):
+            await callback.message.delete()
         await callback.message.answer_document(
             BufferedInputFile(content, filename=f"schedule-{group_name}.ics"),
             caption=(
@@ -432,7 +499,7 @@ def build_router(
     @router.callback_query(F.data == "calendar:help")
     async def calendar_help(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        await callback.message.answer(
+        await callback.message.edit_text(
             "<b>Google Calendar</b>\n"
             "1. Открой Google Calendar в браузере.\n"
             "2. Слева выбери «Другие календари» → «+».\n"
@@ -441,7 +508,8 @@ def build_router(
             "<b>iPhone / iPad</b>\n"
             "Календарь → Календари → Добавить календарь → Добавить календарь подписки.\n\n"
             "<b>macOS</b>\n"
-            "Календарь → Файл → Новая подписка на календарь."
+            "Календарь → Файл → Новая подписка на календарь.",
+            reply_markup=inline([("‹ Назад", "settings:calendar")]),
         )
         await callback.answer()
 
@@ -454,7 +522,7 @@ def build_router(
                 ("Отмена", "settings:calendar"),
             ]
         )
-        await callback.message.answer(
+        await callback.message.edit_text(
             "Старая ссылка сразу перестанет работать. Подписку в календаре придётся "
             "удалить и добавить заново. Сменить ссылку?",
             reply_markup=keyboard,
@@ -465,21 +533,23 @@ def build_router(
     async def calendar_rotate_confirm(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
         if calendars is None:
-            await callback.message.answer("Подписка временно недоступна.")
+            await callback.message.edit_text("Подписка временно недоступна.")
         else:
             url = await calendars.regenerate_subscription_url(callback.from_user.id)
             if url is None:
-                await callback.message.answer("Сначала настрой CALENDAR_BASE_URL.")
+                await callback.message.edit_text("Сначала настрой CALENDAR_BASE_URL.")
             else:
-                await callback.message.answer(
-                    f"Ссылка изменена. Старый адрес больше не работает.\n\n{url}"
+                await callback.message.edit_text(
+                    f"Ссылка изменена. Старый адрес больше не работает.\n\n{url}",
+                    reply_markup=inline([("‹ Назад", "settings:calendar")]),
                 )
         await callback.answer()
 
     @router.callback_query(F.data == "calendar:back")
+    @router.callback_query(F.data == "settings:back")
     async def calendar_back(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        await show_profile(callback.message, callback.from_user.id)
+        await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
 
     return router

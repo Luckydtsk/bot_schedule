@@ -34,6 +34,20 @@ class Schedule:
         return tuple(x for x in self.lessons if x.group == group)
 
 
+def merge_schedules(schedules: tuple[Schedule, ...]) -> Schedule:
+    courses: dict[int, list[str]] = {}
+    lessons: list[Lesson] = []
+    for schedule in schedules:
+        for course, groups in schedule.courses.items():
+            target = courses.setdefault(course, [])
+            target.extend(group for group in groups if group not in target)
+        lessons.extend(schedule.lessons)
+    return Schedule(
+        {course: tuple(groups) for course, groups in courses.items()},
+        tuple(dict.fromkeys(lessons)),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LessonChange:
     kind: str

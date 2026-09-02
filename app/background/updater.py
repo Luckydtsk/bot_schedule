@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.notifications.service import NotificationService
 from app.schedule.diff import diff_schedules
+from app.schedule.models import merge_schedules
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
 from app.schedule.service import ScheduleService
@@ -32,19 +33,39 @@ class ScheduleUpdater:
 
     async def check(self) -> bool:
         async with self._lock:
-            item = await self.source.latest(datetime.now(self.timezone).date())
-            content = await self.source.download(item)
-            content_hash = hashlib.sha256(content).hexdigest()
+            today = datetime.now(self.timezone).date()
+            items = await self.source.current_and_next(today)
+            contents = [await self.source.download(item) for item in items]
+            digest = hashlib.sha256()
+            for item, content in zip(items, contents, strict=True):
+                digest.update(item.name.encode())
+                digest.update(b"\0")
+                digest.update(content)
+                digest.update(b"\0")
+            content_hash = digest.hexdigest()
             if await self.repository.has_hash(content_hash):
                 return False
             old = await self.repository.latest()
-            new = self.parser.parse(content)
+            new = merge_schedules(tuple(self.parser.parse(content) for content in contents))
+            current = items[0]
             await self.repository.save(
-                item.name, item.week_number, item.modified_date, content_hash, new
+                " | ".join(item.name for item in items),
+                current.week_number,
+                max(item.modified_date for item in items),
+                content_hash,
+                new,
             )
             self.schedules.replace(new)
             if old is not None:
-                await self.notifications.notify(diff_schedules(old, new))
+                shared_weeks = {
+                    lesson.date - timedelta(days=lesson.date.weekday()) for lesson in old.lessons
+                } & {lesson.date - timedelta(days=lesson.date.weekday()) for lesson in new.lessons}
+                changes = tuple(
+                    change
+                    for change in diff_schedules(old, new)
+                    if change.date - timedelta(days=change.date.weekday()) in shared_weeks
+                )
+                await self.notifications.notify(changes)
             return True
 
     async def run(self, interval: int) -> None:

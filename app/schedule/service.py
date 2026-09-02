@@ -35,3 +35,15 @@ class ScheduleService:
                 key=lambda x: (x.date, x.start_time),
             )
         )
+
+    def available_weeks(self, group: str, today: date) -> tuple[date, ...]:
+        current_monday = today - timedelta(days=today.weekday())
+        return tuple(
+            sorted(
+                {
+                    lesson.date - timedelta(days=lesson.date.weekday())
+                    for lesson in self.schedule.for_group(group)
+                    if lesson.date - timedelta(days=lesson.date.weekday()) >= current_monday
+                }
+            )
+        )

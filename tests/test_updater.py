@@ -9,8 +9,8 @@ from app.sources.yandex_disk import ScheduleFile
 class Source:
     content = b"workbook"
 
-    async def latest(self, today):
-        return ScheduleFile("f.xlsx", 1, date(2026, 9, 1), date(2026, 9, 1), "u")
+    async def current_and_next(self, today):
+        return (ScheduleFile("f.xlsx", 1, date(2026, 9, 1), date(2026, 9, 1), "u"),)
 
     async def download(self, item):
         return self.content

@@ -7,6 +7,7 @@ from app.sources.yandex_disk import (
     ScheduleFileNotFound,
     YandexScheduleSource,
     parse_schedule_file,
+    select_current_and_next,
     select_schedule_file,
 )
 
@@ -40,6 +41,14 @@ def files():
 
 def test_selects_newest_current_version():
     assert select_schedule_file(files(), date(2026, 9, 3)).modified_date == date(2026, 9, 2)
+
+
+def test_selects_current_and_next_week():
+    selected = select_current_and_next(files(), date(2026, 9, 3))
+    assert [(item.week_number, item.modified_date) for item in selected] == [
+        (1, date(2026, 9, 2)),
+        (2, date(2026, 9, 5)),
+    ]
 
 
 def test_selects_nearest_future():

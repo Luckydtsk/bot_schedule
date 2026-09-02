@@ -1,8 +1,9 @@
+from datetime import datetime, time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import app.bot.handlers as handlers
-from app.schedule.models import Schedule
+from app.schedule.models import Lesson, Schedule
 from app.schedule.service import ScheduleService
 
 
@@ -37,6 +38,7 @@ class FakeMessage:
         self.answers = []
         self.edits = []
         self.documents = []
+        self.deleted = 0
 
     async def answer(self, text, reply_markup=None):
         self.answers.append((text, reply_markup))
@@ -46,6 +48,9 @@ class FakeMessage:
 
     async def answer_document(self, document, caption=None):
         self.documents.append((document, caption))
+
+    async def delete(self):
+        self.deleted += 1
 
 
 class FakeCallback:
@@ -85,6 +90,7 @@ async def test_start_and_settings_flows(monkeypatch):
     users.user = SimpleNamespace(group_name="РИС-23-3", notifications_enabled=True)
     message = FakeMessage()
     await callbacks(router, "message")["settings"](message)
+    assert message.deleted == 1
     assert "Группа: РИС-23-3" in message.answers[0][0]
 
 
@@ -137,6 +143,32 @@ async def test_today_tomorrow_week_require_registration(monkeypatch):
         assert "уровень образования" in message.answers[0][0]
 
 
+async def test_week_menu_shows_current_and_next_week(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    timezone = ZoneInfo("Asia/Yekaterinburg")
+    today = datetime.now(timezone).date()
+    monday = today - timedelta(days=today.weekday())
+    lessons = (
+        Lesson("G", monday, 1, time(8), time(9), "Текущая пара"),
+        Lesson("G", monday + timedelta(days=7), 1, time(8), time(9), "Следующая пара"),
+    )
+    users = Users(SimpleNamespace(telegram_id=7, group_name="G", notifications_enabled=True))
+    router = handlers.build_router(users, ScheduleService(Schedule({1: ("G",)}, lessons)), timezone)
+
+    message = FakeMessage()
+    await callbacks(router, "message")["week"](message)
+    markup = message.answers[0][1]
+    assert [row[0].text.split(" · ", 1)[0] for row in markup.inline_keyboard] == [
+        "Текущая",
+        "Следующая",
+    ]
+
+    selected = FakeCallback(f"week:{(monday + timedelta(days=7)).isoformat()}")
+    await callbacks(router, "callback_query")["selected_week"](selected)
+    assert selected.message.deleted == 1
+    assert "Следующая пара" in selected.message.answers[0][0]
+
+
 async def test_calendar_subscription_flow(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
     users = Users(SimpleNamespace(group_name="РИС-23-3", notifications_enabled=True))
@@ -150,11 +182,11 @@ async def test_calendar_subscription_flow(monkeypatch):
 
     menu = FakeCallback("settings:calendar")
     await callback_handlers["calendar"](menu)
-    assert "Подписка на расписание" in menu.message.answers[0][0]
+    assert "Подписка на расписание" in menu.message.edits[0][0]
 
     link = FakeCallback("calendar:url")
     await callback_handlers["calendar_url"](link)
-    assert "private.ics" in link.message.answers[0][0]
+    assert "private.ics" in link.message.edits[0][0]
 
     download = FakeCallback("calendar:download")
     await callback_handlers["calendar_download"](download)
@@ -163,12 +195,12 @@ async def test_calendar_subscription_flow(monkeypatch):
 
     help_callback = FakeCallback("calendar:help")
     await callback_handlers["calendar_help"](help_callback)
-    assert "Google Calendar" in help_callback.message.answers[0][0]
+    assert "Google Calendar" in help_callback.message.edits[0][0]
 
     rotate = FakeCallback("calendar:rotate")
     await callback_handlers["calendar_rotate"](rotate)
-    assert "Старая ссылка" in rotate.message.answers[0][0]
+    assert "Старая ссылка" in rotate.message.edits[0][0]
 
     confirm = FakeCallback("calendar:rotate:confirm")
     await callback_handlers["calendar_rotate_confirm"](confirm)
-    assert "replaced.ics" in confirm.message.answers[0][0]
+    assert "replaced.ics" in confirm.message.edits[0][0]

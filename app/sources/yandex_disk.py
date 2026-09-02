@@ -79,6 +79,23 @@ def select_schedule_file(files: list[ScheduleFile], today: date) -> ScheduleFile
     return max((item for item in files if item.start_date == latest), key=lambda x: x.modified_date)
 
 
+def select_current_and_next(files: list[ScheduleFile], today: date) -> tuple[ScheduleFile, ...]:
+    current = select_schedule_file(files, today)
+    selected = [current]
+    future_starts = sorted(
+        {item.start_date for item in files if item.start_date > current.start_date}
+    )
+    if future_starts:
+        next_start = future_starts[0]
+        selected.append(
+            max(
+                (item for item in files if item.start_date == next_start),
+                key=lambda item: (item.modified_date, item.name),
+            )
+        )
+    return tuple(selected)
+
+
 class YandexScheduleSource:
     def __init__(self, public_url: str, *, timeout: float = 20, retries: int = 3) -> None:
         self.public_url = public_url
@@ -122,6 +139,11 @@ class YandexScheduleSource:
 
     async def latest(self, today: date, client: httpx.AsyncClient | None = None) -> ScheduleFile:
         return select_schedule_file(await self.list_files(client), today)
+
+    async def current_and_next(
+        self, today: date, client: httpx.AsyncClient | None = None
+    ) -> tuple[ScheduleFile, ...]:
+        return select_current_and_next(await self.list_files(client), today)
 
     async def download(self, item: ScheduleFile, client: httpx.AsyncClient | None = None) -> bytes:
         owned = client is None
