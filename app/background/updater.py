@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.notifications.service import NotificationService
-from app.schedule.diff import diff_schedules
 from app.schedule.models import merge_schedules
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
@@ -57,15 +56,16 @@ class ScheduleUpdater:
             )
             self.schedules.replace(new)
             if old is not None:
-                shared_weeks = {
-                    lesson.date - timedelta(days=lesson.date.weekday()) for lesson in old.lessons
-                } & {lesson.date - timedelta(days=lesson.date.weekday()) for lesson in new.lessons}
-                changes = tuple(
-                    change
-                    for change in diff_schedules(old, new)
-                    if change.date - timedelta(days=change.date.weekday()) in shared_weeks
+                groups = {lesson.group for lesson in old.lessons + new.lessons}
+                changed_groups = tuple(
+                    sorted(
+                        group
+                        for group in groups
+                        if set(old.for_group(group)) != set(new.for_group(group))
+                    )
                 )
-                await self.notifications.notify(changes)
+                if changed_groups:
+                    await self.notifications.notify_groups(changed_groups)
             return True
 
     async def run(self, interval: int) -> None:

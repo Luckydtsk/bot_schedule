@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from html import escape
 
 from app.bot.formatters import format_changes, split_messages
 from app.schedule.diff import changes_by_group
@@ -12,6 +13,16 @@ class NotificationService:
     def __init__(self, users: UserRepository, send: Callable[[int, str], Awaitable[None]]) -> None:
         self.users = users
         self.send = send
+
+    async def notify_groups(self, groups: tuple[str, ...]) -> None:
+        for group in groups:
+            message = (
+                f"<b>🔔 Расписание группы {escape(group)} обновилось</b>\n\n"
+                "В расписании есть изменения. Откройте расписание на неделю "
+                "и проверьте актуальные пары."
+            )
+            for user in await self.users.subscribers(group):
+                await self.send(user.telegram_id, message)
 
     async def notify(self, changes: tuple[LessonChange, ...]) -> None:
         for group, group_changes in changes_by_group(changes).items():

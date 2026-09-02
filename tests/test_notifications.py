@@ -25,3 +25,24 @@ async def test_only_enabled_affected_users_receive(tmp_path):
     await NotificationService(users, send).notify((LessonChange("added", "G1", after=lesson),))
     assert [x[0] for x in sent] == [1]
     await db.close()
+
+
+async def test_generic_group_update_reaches_all_enabled_subscribers(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'generic.db'}")
+    await db.create_schema()
+    users = UserRepository(db.sessions)
+    await users.save(1, 1, "РИС-23-3")
+    await users.save(2, 1, "Другая группа")
+    await users.save(3, 1, "РИС-23-3")
+    await users.toggle_notifications(3)
+    sent = []
+
+    async def send(user, text):
+        sent.append((user, text))
+
+    await NotificationService(users, send).notify_groups(("РИС-23-3",))
+
+    assert [item[0] for item in sent] == [1]
+    assert "Расписание группы РИС-23-3 обновилось" in sent[0][1]
+    assert "расписание на неделю" in sent[0][1]
+    await db.close()
