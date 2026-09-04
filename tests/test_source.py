@@ -24,6 +24,18 @@ def test_parse_cyrillic_and_latin_c():
         assert parsed and parsed.week_number == 2 and parsed.start_date == date(2026, 9, 7)
 
 
+def test_parse_schedule_without_modified_suffix_uses_api_date():
+    source = item("Расписание занятий (неделя №2 c 07.09.26).xlsx")
+    source["modified"] = "2026-09-03T18:19:00+00:00"
+
+    parsed = parse_schedule_file(source)
+
+    assert parsed is not None
+    assert parsed.week_number == 2
+    assert parsed.start_date == date(2026, 9, 7)
+    assert parsed.modified_date == date(2026, 9, 3)
+
+
 def test_ignores_unrelated_xlsx():
     assert parse_schedule_file(item("2 курс факультатив.xlsx")) is None
 
