@@ -33,7 +33,7 @@ def test_ics_contains_complete_calendar_event():
     assert "TZID:Asia/Yekaterinburg" in content
     assert "DTSTART;TZID=Asia/Yekaterinburg:20260902T094000" in content
     assert "DTEND;TZID=Asia/Yekaterinburg:20260902T110000" in content
-    assert "SUMMARY:Распознавание образов" in content
+    assert "SUMMARY:401[1] — Распознавание образов" in content
     assert "LOCATION:401[1]" in content
     assert "Преподаватель: Замятина Е.Б." in unfolded
     assert "Группа: РИС-23-3" in unfolded
@@ -53,7 +53,7 @@ def test_online_url_notes_and_escaping():
     )
     content = build_ics("РИС-23-3", (lesson,), ZoneInfo("Asia/Yekaterinburg")).decode()
     unfolded = content.replace("\r\n ", "")
-    assert "SUMMARY:AI\\, агенты\\; практика\\nчасть 2" in unfolded
+    assert "SUMMARY:Онлайн — AI\\, агенты\\; практика\\nчасть 2" in unfolded
     assert "LOCATION:Онлайн" in unfolded
     assert "Тип занятия: семинар" in unfolded
     assert "Пометки: МКД\\, важно\\, прийти" in unfolded
@@ -64,6 +64,13 @@ def test_content_lines_are_folded_at_75_utf8_octets():
     lesson = replace(sample_lesson(), subject="Очень длинное русское название дисциплины " * 5)
     content = build_ics("РИС-23-3", (lesson,), ZoneInfo("Asia/Yekaterinburg"))
     assert all(len(line) <= 75 for line in content.split(b"\r\n"))
+
+
+def test_summary_has_no_prefix_when_location_is_unknown():
+    lesson = replace(sample_lesson(), location=None)
+    content = build_ics("РИС-23-3", (lesson,), ZoneInfo("Asia/Yekaterinburg")).decode()
+    unfolded = content.replace("\r\n ", "")
+    assert "SUMMARY:Распознавание образов" in unfolded
 
 
 def test_uid_stability_for_updates_and_uniqueness():
@@ -161,6 +168,8 @@ def test_real_schedule_ics_contains_all_ten_lessons():
             f"DTEND;TZID=Asia/Yekaterinburg:{lesson.date:%Y%m%d}T{lesson.end_time:%H%M%S}"
             in unfolded
         )
-        assert f"SUMMARY:{lesson.subject}" in unfolded
+        location = "Онлайн" if lesson.is_online else (lesson.location or "")
+        summary = f"{location} — {lesson.subject}" if location else lesson.subject
+        assert f"SUMMARY:{summary}" in unfolded
         assert f"LOCATION:{'Онлайн' if lesson.is_online else lesson.location}" in unfolded
         assert f"Преподаватель: {lesson.teacher}" in unfolded
