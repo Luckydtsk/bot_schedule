@@ -43,6 +43,11 @@ class ScheduleUpdater:
                 digest.update(b"\0")
             content_hash = digest.hexdigest()
             if await self.repository.has_hash(content_hash):
+                log.info(
+                    "Schedule check complete: unchanged; files=%s; hash=%s",
+                    " | ".join(item.name for item in items),
+                    content_hash[:12],
+                )
                 return False
             old = await self.repository.latest()
             new = merge_schedules(tuple(self.parser.parse(content) for content in contents))
@@ -55,6 +60,7 @@ class ScheduleUpdater:
                 new,
             )
             self.schedules.replace(new)
+            changed_groups: tuple[str, ...] = ()
             if old is not None:
                 groups = {lesson.group for lesson in old.lessons + new.lessons}
                 changed_groups = tuple(
@@ -66,6 +72,13 @@ class ScheduleUpdater:
                 )
                 if changed_groups:
                     await self.notifications.notify_groups(changed_groups)
+            log.info(
+                "Schedule update processed: files=%s; hash=%s; lessons=%s; changed_groups=%s",
+                " | ".join(item.name for item in items),
+                content_hash[:12],
+                len(new.lessons),
+                len(changed_groups),
+            )
             return True
 
     async def run(self, interval: int) -> None:

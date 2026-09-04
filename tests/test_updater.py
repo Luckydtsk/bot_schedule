@@ -1,3 +1,4 @@
+import logging
 from datetime import date, time
 from zoneinfo import ZoneInfo
 
@@ -64,6 +65,19 @@ async def test_baseline_has_no_notifications_and_duplicate_is_idempotent():
     assert notifications.calls == [] and repo.saves == 1
     assert await updater.check() is False
     assert notifications.calls == [] and repo.saves == 1
+
+
+async def test_check_logs_processed_and_unchanged_results(caplog):
+    repo, notifications, schedules = Repo(), Notifications(), Schedules()
+    updater = ScheduleUpdater(
+        Source(), Parser(), repo, schedules, notifications, ZoneInfo("Asia/Yekaterinburg")
+    )
+    with caplog.at_level(logging.INFO, logger="app.background.updater"):
+        await updater.check()
+        await updater.check()
+    assert "Schedule update processed" in caplog.text
+    assert "changed_groups=0" in caplog.text
+    assert "Schedule check complete: unchanged" in caplog.text
 
 
 async def test_next_content_is_compared_and_notified():
