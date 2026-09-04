@@ -69,6 +69,11 @@ class UserRepository:
             ).all()
             return tuple(_model(row) for row in rows)
 
+    async def all_users(self) -> tuple[User, ...]:
+        async with self.sessions() as session:
+            rows = (await session.scalars(select(UserRow).order_by(UserRow.telegram_id))).all()
+            return tuple(_model(row) for row in rows)
+
     async def calendar_token(self, telegram_id: int) -> str:
         async with self.sessions() as session:
             row = await session.get(CalendarSubscriptionRow, telegram_id)

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 from datetime import date, datetime, timedelta
+from html import escape
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
@@ -48,8 +55,10 @@ def build_router(
     timezone: ZoneInfo,
     force_update: object | None = None,
     calendars: CalendarService | None = None,
+    admin_ids: frozenset[int] = frozenset(),
 ) -> Router:
     router = Router()
+    pending_broadcasts: dict[int, str] = {}
 
     def subject_catalog(group: str) -> tuple[str, ...]:
         return tuple(sorted({lesson.subject for lesson in schedules.schedule.for_group(group)}))
@@ -194,6 +203,72 @@ def build_router(
             )
         else:
             await choose_education(message)
+
+    @router.message(Command("broadcast"))
+    async def broadcast(message: Message) -> None:
+        if message.from_user is None or message.from_user.id not in admin_ids:
+            await message.answer("Команда недоступна.")
+            return
+        text = (message.text or "").partition(" ")[2].strip()
+        if not text:
+            await message.answer("Использование: /broadcast текст сообщения")
+            return
+        if len(text) > 4000:
+            await message.answer("Сообщение слишком длинное. Максимум — 4000 символов.")
+            return
+        pending_broadcasts[message.from_user.id] = text
+        await message.answer(
+            f"<b>Предпросмотр рассылки</b>\n\n{escape(text)}",
+            reply_markup=inline(
+                [("Отправить всем", "broadcast:confirm"), ("Отмена", "broadcast:cancel")]
+            ),
+        )
+
+    @router.callback_query(F.data == "broadcast:confirm")
+    async def broadcast_confirm(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        admin_id = callback.from_user.id
+        text = pending_broadcasts.pop(admin_id, None) if admin_id in admin_ids else None
+        if text is None:
+            await callback.message.edit_text("Рассылка не найдена или уже завершена.")
+            await callback.answer()
+            return
+        recipients = await users.all_users()
+        bot = callback.bot
+        assert bot is not None
+        await callback.message.edit_text(f"Рассылка запущена. Получателей: {len(recipients)}.")
+        sent = blocked = failed = 0
+        for user in recipients:
+            try:
+                await bot.send_message(user.telegram_id, escape(text))
+                sent += 1
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after)
+                try:
+                    await bot.send_message(user.telegram_id, escape(text))
+                    sent += 1
+                except TelegramForbiddenError:
+                    blocked += 1
+                except TelegramAPIError:
+                    failed += 1
+            except TelegramForbiddenError:
+                blocked += 1
+            except TelegramAPIError:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await callback.message.edit_text(
+            "Рассылка завершена.\n\n"
+            f"Отправлено: {sent}\nЗаблокировали бота: {blocked}\nОшибок: {failed}"
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "broadcast:cancel")
+    async def broadcast_cancel(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        if callback.from_user.id in admin_ids:
+            pending_broadcasts.pop(callback.from_user.id, None)
+        await callback.message.edit_text("Рассылка отменена.")
+        await callback.answer()
 
     @router.callback_query(F.data == "education:bachelor")
     async def bachelor(callback: CallbackQuery) -> None:

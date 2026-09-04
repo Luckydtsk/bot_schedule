@@ -52,7 +52,9 @@ async def run() -> None:
         timezone,
     )
     dispatcher = Dispatcher()
-    dispatcher.include_router(build_router(users, schedules, timezone, updater, calendars))
+    dispatcher.include_router(
+        build_router(users, schedules, timezone, updater, calendars, settings.admin_id_set)
+    )
     calendar_runner = web.AppRunner(create_calendar_app(calendars), access_log=None)
     await calendar_runner.setup()
     calendar_site = web.TCPSite(

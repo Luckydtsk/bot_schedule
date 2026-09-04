@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     calendar_port: int = Field(default=8080, ge=1, le=65535)
     port: int | None = Field(default=None, ge=1, le=65535)
     calendar_base_url: str | None = None
+    admin_ids: str = ""
+
+    @property
+    def admin_id_set(self) -> frozenset[int]:
+        return frozenset(int(value.strip()) for value in self.admin_ids.split(",") if value.strip())
 
     @field_validator("calendar_base_url", mode="before")
     @classmethod

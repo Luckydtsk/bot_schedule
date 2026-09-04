@@ -36,6 +36,14 @@ async def test_subscribers_are_filtered(db):
     assert [x.telegram_id for x in await repo.subscribers("G1")] == [1]
 
 
+async def test_all_users_are_returned_regardless_of_notification_setting(db):
+    repo = UserRepository(db.sessions)
+    await repo.save(2, 1, "G2")
+    await repo.save(1, 1, "G1")
+    await repo.toggle_notifications(2)
+    assert [user.telegram_id for user in await repo.all_users()] == [1, 2]
+
+
 async def test_schedule_version_persistence(db):
     repo = ScheduleRepository(db.sessions)
     schedule = Schedule({1: ("G1",)}, ())

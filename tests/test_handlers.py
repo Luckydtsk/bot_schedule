@@ -31,10 +31,25 @@ class Users:
     async def clear_hidden_subjects(self, user_id):
         return None
 
+    async def all_users(self):
+        return (
+            SimpleNamespace(telegram_id=10),
+            SimpleNamespace(telegram_id=11),
+        )
+
+
+class FakeBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, telegram_id, text):
+        self.sent.append((telegram_id, text))
+
 
 class FakeMessage:
-    def __init__(self):
-        self.from_user = SimpleNamespace(id=7)
+    def __init__(self, text=None, user_id=7):
+        self.from_user = SimpleNamespace(id=user_id)
+        self.text = text
         self.answers = []
         self.edits = []
         self.documents = []
@@ -58,6 +73,7 @@ class FakeCallback:
         self.data = data
         self.message = FakeMessage()
         self.from_user = SimpleNamespace(id=7)
+        self.bot = FakeBot()
         self.answered = 0
 
     async def answer(self):
@@ -66,6 +82,39 @@ class FakeCallback:
 
 def callbacks(router, observer):
     return {item.callback.__name__: item.callback for item in getattr(router, observer).handlers}
+
+
+async def test_admin_can_confirm_broadcast(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    router = handlers.build_router(
+        Users(),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        admin_ids=frozenset({7}),
+    )
+    message_handlers = callbacks(router, "message")
+    callback_handlers = callbacks(router, "callback_query")
+    message = FakeMessage("/broadcast Важное <сообщение>")
+
+    await message_handlers["broadcast"](message)
+
+    assert "Предпросмотр" in message.answers[0][0]
+    assert "&lt;сообщение&gt;" in message.answers[0][0]
+    confirmation = FakeCallback("broadcast:confirm")
+    await callback_handlers["broadcast_confirm"](confirmation)
+    assert confirmation.bot.sent == [
+        (10, "Важное &lt;сообщение&gt;"),
+        (11, "Важное &lt;сообщение&gt;"),
+    ]
+    assert "Отправлено: 2" in confirmation.message.edits[-1][0]
+
+
+async def test_broadcast_is_denied_to_non_admin(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    router = handlers.build_router(Users(), ScheduleService(), ZoneInfo("Asia/Yekaterinburg"))
+    message = FakeMessage("/broadcast test")
+    await callbacks(router, "message")["broadcast"](message)
+    assert message.answers[0][0] == "Команда недоступна."
 
 
 class Calendars:
