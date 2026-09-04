@@ -22,7 +22,13 @@ LOCATION_RE = re.compile(r"\(([^()]*(?:онлайн|\d{2,4}\s*\[\d+\])[^()]*)\)\
 TEACHER_RE = re.compile(r"([А-ЯЁ][а-яё-]+(?:[ \t]+[А-ЯЁ][а-яё-]+)*[ \t]+[А-ЯЁ]\.[А-ЯЁ]\.)")
 NOTE_RE = re.compile(r"\(([А-ЯЁA-Z]{2,8})\)")
 LESSON_TYPES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\((?:лекц(?:ия|ии)?|л)\)|\bлекц(?:ия|ии)\b", re.I), "лекция"),
+    (
+        re.compile(
+            r"\((?:лек(?:ц(?:ия|ии)?)?\.?|л)\)|\bлек(?:ц(?:ия|ии)?)?\.|\bлекц(?:ия|ии)\b",
+            re.I,
+        ),
+        "лекция",
+    ),
     (re.compile(r"\((?:семинар|сем\.?|с)\)|\bсеминар\w*\b", re.I), "семинар"),
     (re.compile(r"\bпракт(?:ика|ическое|\.)\s*(?:занятие|курс)?", re.I), "практика"),
     (re.compile(r"\bлаб(?:ораторная|\.)\s*(?:работа)?", re.I), "лабораторная"),
@@ -84,11 +90,13 @@ def parse_lesson_text(
     is_online = bool(re.search(r"онлайн", value, re.I))
     location = "онлайн" if is_online else location_raw
     notes = tuple(dict.fromkeys(NOTE_RE.findall(value)))
-    lesson_type = None
+    found_types: list[tuple[int, str]] = []
     for pattern, normalized in LESSON_TYPES:
-        if pattern.search(value):
-            lesson_type = normalized
-            break
+        found_types.extend((match.start(), normalized) for match in pattern.finditer(value))
+    lesson_types = dict.fromkeys(
+        normalized for _, normalized in sorted(found_types, key=lambda item: item[0])
+    )
+    lesson_type = " / ".join(lesson_types) or None
     subject_parts: list[str] = []
     for line in lines:
         if teacher and teacher in line:
