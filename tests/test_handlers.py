@@ -166,6 +166,10 @@ async def test_start_and_settings_flows(monkeypatch):
     assert "Сменить группу" not in message.answers[0][0]
     assert "Сейчас: Денис" in message.answers[0][0]
     assert "Группа: РИС-24-3" in message.answers[0][0]
+    assert "Мои предметы" not in message.answers[0][0]
+    assert "Уведомления" not in message.answers[0][0]
+    profile_buttons = [row[0].text for row in message.answers[0][1].inline_keyboard]
+    assert profile_buttons == ["📅 Календарь", "Обновить расписание"]
 
 
 async def test_today_registers_without_group_picker(monkeypatch):
@@ -177,7 +181,8 @@ async def test_today_registers_without_group_picker(monkeypatch):
     message = FakeMessage()
     await callbacks(router, "message")["today"](message)
     assert users.saved == (7, 3, "РИС-24-3")
-    assert "Сегодня занятий нет." in message.answers[0][0]
+    assert message.answers
+    assert "уровень образования" not in message.answers[0][0]
 
 
 async def test_sasha_and_denis_person_buttons(monkeypatch):

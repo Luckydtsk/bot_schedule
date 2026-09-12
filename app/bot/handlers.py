@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import time
 from datetime import date, datetime, timedelta
@@ -48,7 +47,6 @@ from app.schedule.service import ScheduleService
 from app.users.models import User
 from app.users.repository import UserRepository
 
-SUBJECTS_PER_PAGE = 12
 MANUAL_UPDATE_COOLDOWN_SECONDS = 120
 log = logging.getLogger(__name__)
 
@@ -91,19 +89,8 @@ def build_router(
     pending_broadcasts: dict[int, str] = {}
     last_manual_updates: dict[int, float] = {}
 
-    def subject_catalog(group: str) -> tuple[str, ...]:
-        return tuple(sorted({lesson.subject for lesson in schedules.schedule.for_group(group)}))
-
-    def subject_key(subject: str) -> str:
-        return hashlib.sha256(subject.encode()).hexdigest()[:12]
-
     def active_group(user: User) -> str:
         return SASHA_GROUP if selected_person_of(user) == SASHA else user.group_name
-
-    def active_subjects(user: User) -> tuple[str, ...]:
-        if selected_person_of(user) == SASHA:
-            return sasha_schedule.subjects()
-        return tuple(sorted({*subject_catalog(user.group_name), *tutoring.subjects()}))
 
     def _with_tutoring(
         lessons: tuple[Lesson, ...], extra: tuple[Lesson, ...]
@@ -136,59 +123,16 @@ def build_router(
         user = await ensure_user(telegram_id)
         return main_keyboard(selected_person_of(user))
 
-    async def show_subjects(message: Message, telegram_id: int, page: int = 0) -> None:
-        user = await ensure_user(telegram_id)
-        subjects = active_subjects(user)
-        hidden = await users.hidden_subjects(telegram_id)
-        pages = max(1, (len(subjects) + SUBJECTS_PER_PAGE - 1) // SUBJECTS_PER_PAGE)
-        page = min(max(page, 0), pages - 1)
-        start = page * SUBJECTS_PER_PAGE
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=f"{'—' if subject in hidden else '✓'} {subject}",
-                    callback_data=f"subjects:t:{page}:{subject_key(subject)}",
-                )
-            ]
-            for subject in subjects[start : start + SUBJECTS_PER_PAGE]
-        ]
-        navigation: list[InlineKeyboardButton] = []
-        if page > 0:
-            navigation.append(
-                InlineKeyboardButton(text="‹", callback_data=f"subjects:p:{page - 1}")
-            )
-        if page + 1 < pages:
-            navigation.append(
-                InlineKeyboardButton(text="›", callback_data=f"subjects:p:{page + 1}")
-            )
-        if navigation:
-            rows.append(navigation)
-        rows.append([InlineKeyboardButton(text="Показывать всё", callback_data="subjects:reset")])
-        await message.edit_text(
-            "<b>Мои предметы</b>\n\n"
-            "✓ показывается\n"
-            "— скрыт\n\n"
-            "Нажми на дисциплину, чтобы изменить её. "
-            f"Страница {page + 1} из {pages}.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-        )
-
     async def show_profile(message: Message, telegram_id: int, *, edit: bool = False) -> None:
         user = await ensure_user(telegram_id)
-        state = "включены" if user.notifications_enabled else "выключены"
         person = PERSON_LABELS[selected_person_of(user)]
         keyboard = inline(
             [
-                ("Мои предметы", "settings:subjects"),
-                (f"Уведомления: {state}", "settings:notify"),
                 ("📅 Календарь", "settings:calendar"),
                 ("Обновить расписание", "settings:update"),
             ]
         )
-        text = (
-            f"<b>Профиль</b>\n\n"
-            f"Сейчас: {person}\nГруппа: {active_group(user)}\nУведомления: {state}"
-        )
+        text = f"<b>Профиль</b>\n\nСейчас: {person}\nГруппа: {active_group(user)}"
         if edit:
             await message.edit_text(text, reply_markup=keyboard)
         else:
@@ -403,49 +347,6 @@ def build_router(
             with contextlib.suppress(TelegramBadRequest):
                 await message.delete()
             await show_profile(message, message.from_user.id)
-
-    @router.callback_query(F.data == "settings:notify")
-    async def notify(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await ensure_user(callback.from_user.id)
-        await users.toggle_notifications(callback.from_user.id)
-        await show_profile(callback.message, callback.from_user.id, edit=True)
-        await callback.answer()
-
-    @router.callback_query(F.data == "settings:subjects")
-    async def subjects(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await show_subjects(callback.message, callback.from_user.id)
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("subjects:p:"))
-    async def subjects_page(callback: CallbackQuery) -> None:
-        assert callback.data is not None and isinstance(callback.message, Message)
-        page = int(callback.data.rsplit(":", 1)[1])
-        await show_subjects(callback.message, callback.from_user.id, page)
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("subjects:t:"))
-    async def subjects_toggle(callback: CallbackQuery) -> None:
-        assert callback.data is not None and isinstance(callback.message, Message)
-        _, _, page_raw, key = callback.data.split(":", 3)
-        user = await ensure_user(callback.from_user.id)
-        match = next(
-            (subject for subject in active_subjects(user) if subject_key(subject) == key),
-            None,
-        )
-        if match is not None:
-            await users.toggle_hidden_subject(callback.from_user.id, match)
-        await show_subjects(callback.message, callback.from_user.id, int(page_raw))
-        await callback.answer()
-
-    @router.callback_query(F.data == "subjects:reset")
-    async def subjects_reset(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await ensure_user(callback.from_user.id)
-        await users.clear_hidden_subjects(callback.from_user.id)
-        await show_subjects(callback.message, callback.from_user.id)
-        await callback.answer("Все предметы снова отображаются")
 
     @router.callback_query(F.data == "settings:update")
     async def update(callback: CallbackQuery) -> None:
