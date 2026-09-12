@@ -3,6 +3,7 @@ from datetime import time
 from zoneinfo import ZoneInfo
 
 from app.llm.agent import ScheduleAssistant
+from app.llm.transcribe import VoiceTranscriber
 from app.people import DENIS
 from app.schedule.event_repository import EventRepository
 from app.storage.database import Database
@@ -96,3 +97,28 @@ async def test_assistant_without_key_explains_setup():
     )
     text = await assistant.reply(DENIS, "перенеси Соню")
     assert "не подключена" in text
+
+
+async def test_transcriber_sends_russian_audio_to_whisper():
+    calls = []
+
+    async def post(url, headers, body):
+        calls.append((url, body))
+        return {"text": "  Соню перенеси на воскресенье  "}
+
+    transcriber = VoiceTranscriber(
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "openai/whisper-large-v3",
+        post=post,
+    )
+    text = await transcriber.transcribe(b"ogg-bytes")
+    assert text == "Соню перенеси на воскресенье"
+    assert calls[0][0].endswith("/audio/transcriptions")
+    assert calls[0][1]["language"] == "ru"
+    assert calls[0][1]["input_audio"]["format"] == "ogg"
+
+
+async def test_transcriber_without_key_returns_empty():
+    transcriber = VoiceTranscriber("", "https://openrouter.ai/api/v1", "openai/whisper-large-v3")
+    assert await transcriber.transcribe(b"ogg-bytes") == ""

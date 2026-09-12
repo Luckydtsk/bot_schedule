@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import date, datetime, timedelta
 from html import escape
+from io import BytesIO
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -29,6 +30,7 @@ from aiogram.types import (
 from app.bot.formatters import format_day, format_schedule
 from app.calendar.service import CalendarService
 from app.llm.agent import ScheduleAssistant
+from app.llm.transcribe import MAX_VOICE_BYTES, VoiceTranscriber
 from app.people import (
     DENIS,
     DENIS_COURSE,
@@ -79,6 +81,16 @@ def selected_person_of(user: User) -> str:
     return user.selected_person or DENIS
 
 
+async def download_voice_bytes(message: Message) -> bytes | None:
+    bot = getattr(message, "bot", None)
+    voice = getattr(message, "voice", None)
+    if bot is None or voice is None:
+        return None
+    buffer = BytesIO()
+    await bot.download(voice, destination=buffer)
+    return buffer.getvalue()
+
+
 def build_router(
     users: UserRepository,
     schedules: ScheduleService,
@@ -88,6 +100,7 @@ def build_router(
     admin_ids: frozenset[int] = frozenset(),
     events: EventRepository | None = None,
     assistant: ScheduleAssistant | None = None,
+    transcriber: VoiceTranscriber | None = None,
 ) -> Router:
     router = Router()
     pending_broadcasts: dict[int, str] = {}
@@ -196,7 +209,7 @@ def build_router(
         person = PERSON_LABELS[selected_person_of(user)]
         await message.answer(
             f"Сейчас расписание: {person}.\n\n"
-            "Можно написать текстом, что поменять — например, "
+            "Можно написать текстом или отправить голосовое — например, "
             "перенести репетиторство или добавить пару Саше.",
             reply_markup=main_keyboard(selected_person_of(user)),
         )
@@ -554,13 +567,16 @@ def build_router(
         await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
 
-    @router.message(F.text)
-    async def free_chat(message: Message) -> None:
-        text = (message.text or "").strip()
-        if message.from_user is None or not text:
-            return
-        user = await ensure_user(message.from_user.id)
-        person = selected_person_of(user)
+    async def show_typing(message: Message) -> None:
+        bot = getattr(message, "bot", None)
+        chat = getattr(message, "chat", None)
+        if bot is not None and chat is not None:
+            with contextlib.suppress(TelegramAPIError):
+                await bot.send_chat_action(chat.id, "typing")
+
+    async def apply_schedule_text(
+        message: Message, person: str, text: str, *, prefix: str = ""
+    ) -> None:
         markup = main_keyboard(person)
         if assistant is None:
             await message.answer(
@@ -568,12 +584,65 @@ def build_router(
                 reply_markup=markup,
             )
             return
-        bot = getattr(message, "bot", None)
-        chat = getattr(message, "chat", None)
-        if bot is not None and chat is not None:
-            with contextlib.suppress(TelegramAPIError):
-                await bot.send_chat_action(chat.id, "typing")
+        await show_typing(message)
         reply = await assistant.reply(person, text)
-        await message.answer(reply, reply_markup=markup)
+        await message.answer(f"{prefix}{reply}", reply_markup=markup)
+
+    @router.message(F.voice)
+    async def voice_chat(message: Message) -> None:
+        if message.from_user is None or message.voice is None:
+            return
+        user = await ensure_user(message.from_user.id)
+        person = selected_person_of(user)
+        markup = main_keyboard(person)
+        if transcriber is None or not transcriber.enabled:
+            await message.answer(
+                "Голосовые заработают, когда нейронка будет подключена.",
+                reply_markup=markup,
+            )
+            return
+        size = getattr(message.voice, "file_size", 0) or 0
+        if size > MAX_VOICE_BYTES:
+            await message.answer(
+                "Голосовое слишком длинное. Скажи короче или напиши текстом.",
+                reply_markup=markup,
+            )
+            return
+        await show_typing(message)
+        try:
+            audio = await download_voice_bytes(message)
+        except Exception:
+            log.exception("Failed to download voice message")
+            audio = None
+        if not audio:
+            await message.answer(
+                "Не получилось скачать голосовое. Попробуй ещё раз.",
+                reply_markup=markup,
+            )
+            return
+        try:
+            text = await transcriber.transcribe(audio)
+        except Exception:
+            log.exception("Voice transcription failed")
+            await message.answer(
+                "Не получилось распознать голосовое. Напиши текстом.",
+                reply_markup=markup,
+            )
+            return
+        if not text:
+            await message.answer(
+                "Не разобрала голосовое. Скажи ещё раз или напиши текстом.",
+                reply_markup=markup,
+            )
+            return
+        await apply_schedule_text(message, person, text, prefix=f"Распознано: {text}\n\n")
+
+    @router.message(F.text)
+    async def free_chat(message: Message) -> None:
+        text = (message.text or "").strip()
+        if message.from_user is None or not text:
+            return
+        user = await ensure_user(message.from_user.id)
+        await apply_schedule_text(message, selected_person_of(user), text)
 
     return router

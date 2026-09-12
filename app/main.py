@@ -17,6 +17,7 @@ from app.calendar.http import create_calendar_app
 from app.calendar.service import CalendarService
 from app.config import Settings
 from app.llm.agent import ScheduleAssistant
+from app.llm.transcribe import VoiceTranscriber
 from app.notifications.service import NotificationService
 from app.people import DENIS_GROUP
 from app.schedule.event_repository import EventRepository
@@ -51,6 +52,11 @@ async def run() -> None:
         settings.llm_base_url,
         settings.llm_model,
     )
+    transcriber = VoiceTranscriber(
+        settings.resolved_llm_key,
+        settings.llm_base_url,
+        settings.whisper_model,
+    )
     calendars = CalendarService(users, schedules, timezone, settings.calendar_base_url)
 
     async def send(chat_id: int, text: str) -> None:
@@ -77,6 +83,7 @@ async def run() -> None:
             settings.admin_id_set,
             events,
             assistant,
+            transcriber,
         )
     )
     calendar_runner = web.AppRunner(create_calendar_app(calendars), access_log=None)
