@@ -111,6 +111,7 @@ async def test_transcriber_sends_russian_audio_to_whisper():
         "https://openrouter.ai/api/v1",
         "openai/whisper-large-v3",
         post=post,
+        use_ffmpeg=False,
     )
     text = await transcriber.transcribe(b"ogg-bytes")
     assert text == "Соню перенеси на воскресенье"
@@ -119,6 +120,33 @@ async def test_transcriber_sends_russian_audio_to_whisper():
     assert calls[0][1]["input_audio"]["format"] == "ogg"
 
 
+async def test_transcriber_converts_telegram_opus_to_wav():
+    calls = []
+
+    async def post(url, headers, body):
+        calls.append(body["input_audio"]["format"])
+        if body["input_audio"]["format"] != "wav":
+            raise RuntimeError("ogg opus is not supported")
+        return {"text": "Соню перенеси на воскресенье"}
+
+    async def convert(audio: bytes) -> bytes | None:
+        assert audio == b"ogg-bytes"
+        return b"RIFFWAV"
+
+    transcriber = VoiceTranscriber(
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "openai/whisper-large-v3",
+        post=post,
+        convert=convert,
+    )
+    text = await transcriber.transcribe(b"ogg-bytes")
+    assert text == "Соню перенеси на воскресенье"
+    assert calls == ["wav"]
+
+
 async def test_transcriber_without_key_returns_empty():
-    transcriber = VoiceTranscriber("", "https://openrouter.ai/api/v1", "openai/whisper-large-v3")
+    transcriber = VoiceTranscriber(
+        "", "https://openrouter.ai/api/v1", "openai/whisper-large-v3", use_ffmpeg=False
+    )
     assert await transcriber.transcribe(b"ogg-bytes") == ""
