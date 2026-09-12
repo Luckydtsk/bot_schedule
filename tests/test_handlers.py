@@ -156,7 +156,7 @@ async def test_start_and_settings_flows(monkeypatch):
     message = FakeMessage()
     await callbacks(router, "message")["start"](message)
     assert users.saved == (7, 3, "РИС-24-3")
-    assert "Что показать?" in message.answers[0][0]
+    assert "Можно написать текстом" in message.answers[0][0]
     assert "уровень образования" not in message.answers[0][0]
     row = [button.text for button in message.answers[0][1].keyboard[0]]
     assert row == ["Саша", "Денис ✓"]
@@ -213,6 +213,38 @@ async def test_sasha_and_denis_person_buttons(monkeypatch):
     assert users.user.selected_person == "denis"
     assert denis.answers[0][0] == "Выбран профиль Дениса."
     assert [button.text for button in denis.answers[0][1].keyboard[0]] == ["Саша", "Денис ✓"]
+
+
+async def test_free_chat_uses_selected_profile(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+
+    class Assistant:
+        def __init__(self):
+            self.calls = []
+
+        async def reply(self, person, text):
+            self.calls.append((person, text))
+            return f"ok:{person}:{text}"
+
+    users = Users(
+        SimpleNamespace(
+            telegram_id=7,
+            group_name="РИС-24-3",
+            notifications_enabled=True,
+            selected_person="sasha",
+        )
+    )
+    assistant = Assistant()
+    router = handlers.build_router(
+        users,
+        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
+        ZoneInfo("Asia/Yekaterinburg"),
+        assistant=assistant,
+    )
+    message = FakeMessage("Соню перенеси на воскресенье")
+    await callbacks(router, "message")["free_chat"](message)
+    assert assistant.calls == [("sasha", "Соню перенеси на воскресенье")]
+    assert message.answers[0][0] == "ok:sasha:Соню перенеси на воскресенье"
 
 
 async def test_week_menu_shows_current_and_next_week(monkeypatch):

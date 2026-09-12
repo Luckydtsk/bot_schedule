@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     port: int | None = Field(default=None, ge=1, le=65535)
     calendar_base_url: str | None = None
     admin_ids: str = ""
+    llm_api_key: str = ""
+    openrouter_api_key: str = ""
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_model: str = "qwen/qwen3-32b"
+
+    @property
+    def resolved_llm_key(self) -> str:
+        return self.llm_api_key.strip() or self.openrouter_api_key.strip()
 
     @property
     def admin_id_set(self) -> frozenset[int]:

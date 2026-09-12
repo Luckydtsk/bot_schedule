@@ -1,8 +1,19 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, inspect, text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Time,
+    inspect,
+    text,
+)
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -54,6 +65,23 @@ class CalendarSubscriptionRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
+
+
+class PersonalEventRow(Base):
+    __tablename__ = "personal_events"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    person: Mapped[str] = mapped_column(String(16), index=True)
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    on_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
+    pair_number: Mapped[int] = mapped_column(Integer, default=0)
+    subject: Mapped[str] = mapped_column(String(512))
+    teacher: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    lesson_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parity: Mapped[str] = mapped_column(String(16), default="always")
+    seed_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
 
 
 class UserHiddenSubjectRow(Base):

@@ -16,8 +16,10 @@ from app.bot.handlers import build_router
 from app.calendar.http import create_calendar_app
 from app.calendar.service import CalendarService
 from app.config import Settings
+from app.llm.agent import ScheduleAssistant
 from app.notifications.service import NotificationService
 from app.people import DENIS_GROUP
+from app.schedule.event_repository import EventRepository
 from app.schedule.models import keep_group
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
@@ -36,10 +38,19 @@ async def run() -> None:
     await database.create_schema()
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     users = UserRepository(database.sessions)
+    events = EventRepository(database.sessions)
+    await events.seed_if_empty()
     schedules_repo = ScheduleRepository(database.sessions)
     latest = await schedules_repo.latest()
     schedules = ScheduleService(keep_group(latest, DENIS_GROUP) if latest else None)
     timezone = ZoneInfo(settings.timezone)
+    assistant = ScheduleAssistant(
+        events,
+        timezone,
+        settings.resolved_llm_key,
+        settings.llm_base_url,
+        settings.llm_model,
+    )
     calendars = CalendarService(users, schedules, timezone, settings.calendar_base_url)
 
     async def send(chat_id: int, text: str) -> None:
@@ -57,7 +68,16 @@ async def run() -> None:
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(
-        build_router(users, schedules, timezone, updater, calendars, settings.admin_id_set)
+        build_router(
+            users,
+            schedules,
+            timezone,
+            updater,
+            calendars,
+            settings.admin_id_set,
+            events,
+            assistant,
+        )
     )
     calendar_runner = web.AppRunner(create_calendar_app(calendars), access_log=None)
     await calendar_runner.setup()

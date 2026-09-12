@@ -29,3 +29,7 @@ def test_railway_port_takes_precedence():
 def test_admin_ids_are_parsed_from_comma_separated_setting():
     assert settings(admin_ids="123, 456").admin_id_set == frozenset({123, 456})
     assert settings(admin_ids="").admin_id_set == frozenset()
+
+
+def test_openrouter_key_is_used_when_llm_key_is_empty():
+    assert settings(openrouter_api_key=" sk-or-1 ").resolved_llm_key == "sk-or-1"

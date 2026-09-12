@@ -28,6 +28,7 @@ from aiogram.types import (
 
 from app.bot.formatters import format_day, format_schedule
 from app.calendar.service import CalendarService
+from app.llm.agent import ScheduleAssistant
 from app.people import (
     DENIS,
     DENIS_COURSE,
@@ -42,6 +43,7 @@ from app.people import (
 )
 from app.schedule import sasha as sasha_schedule
 from app.schedule import tutoring
+from app.schedule.event_repository import EventRepository
 from app.schedule.models import Lesson
 from app.schedule.service import ScheduleService
 from app.users.models import User
@@ -84,6 +86,8 @@ def build_router(
     force_update: object | None = None,
     calendars: CalendarService | None = None,
     admin_ids: frozenset[int] = frozenset(),
+    events: EventRepository | None = None,
+    assistant: ScheduleAssistant | None = None,
 ) -> Router:
     router = Router()
     pending_broadcasts: dict[int, str] = {}
@@ -97,21 +101,48 @@ def build_router(
     ) -> tuple[Lesson, ...]:
         return tuple(sorted((*lessons, *extra), key=lambda item: (item.date, item.start_time)))
 
-    def lessons_on(user: User, day: date) -> tuple[Lesson, ...]:
-        if selected_person_of(user) == SASHA:
+    async def extra_on(person: str, day: date) -> tuple[Lesson, ...]:
+        if events is not None:
+            return await events.for_date(person, day)
+        if person == SASHA:
             return sasha_schedule.for_date(day)
-        return _with_tutoring(schedules.for_date(user.group_name, day), tutoring.for_date(day))
+        return tutoring.for_date(day)
 
-    def lessons_week(user: User, day: date) -> tuple[Lesson, ...]:
-        if selected_person_of(user) == SASHA:
+    async def extra_week(person: str, day: date) -> tuple[Lesson, ...]:
+        if events is not None:
+            return await events.for_week(person, day)
+        if person == SASHA:
             return sasha_schedule.for_week(day)
-        return _with_tutoring(schedules.for_week(user.group_name, day), tutoring.for_week(day))
+        return tutoring.for_week(day)
 
-    def weeks_for(user: User, today: date) -> tuple[date, ...]:
-        if selected_person_of(user) == SASHA:
+    async def extra_weeks(person: str, today: date) -> tuple[date, ...]:
+        if events is not None:
+            return await events.weeks(person, today)
+        if person == SASHA:
             return sasha_schedule.available_weeks(today)
+        return tutoring.available_weeks(today)
+
+    async def lessons_on(user: User, day: date) -> tuple[Lesson, ...]:
+        person = selected_person_of(user)
+        extra = await extra_on(person, day)
+        if person == SASHA:
+            return extra
+        return _with_tutoring(schedules.for_date(user.group_name, day), extra)
+
+    async def lessons_week(user: User, day: date) -> tuple[Lesson, ...]:
+        person = selected_person_of(user)
+        extra = await extra_week(person, day)
+        if person == SASHA:
+            return extra
+        return _with_tutoring(schedules.for_week(user.group_name, day), extra)
+
+    async def weeks_for(user: User, today: date) -> tuple[date, ...]:
+        person = selected_person_of(user)
+        extra = await extra_weeks(person, today)
+        if person == SASHA:
+            return extra
         university = schedules.available_weeks(user.group_name, today)
-        return tuple(sorted({*university, *tutoring.available_weeks(today)}))
+        return tuple(sorted({*university, *extra}))
 
     async def ensure_user(telegram_id: int) -> User:
         user = await users.get(telegram_id)
@@ -164,7 +195,9 @@ def build_router(
         user = await ensure_user(message.from_user.id)
         person = PERSON_LABELS[selected_person_of(user)]
         await message.answer(
-            f"Сейчас расписание: {person}.\n\nЧто показать?",
+            f"Сейчас расписание: {person}.\n\n"
+            "Можно написать текстом, что поменять — например, "
+            "перенести репетиторство или добавить пару Саше.",
             reply_markup=main_keyboard(selected_person_of(user)),
         )
 
@@ -241,9 +274,9 @@ def build_router(
         markup = main_keyboard(selected_person_of(user))
         today = datetime.now(timezone).date()
         lessons = (
-            lessons_week(user, today)
+            await lessons_week(user, today)
             if offset is None
-            else lessons_on(user, today + timedelta(days=offset))
+            else await lessons_on(user, today + timedelta(days=offset))
         )
         hidden = await users.hidden_subjects(user.telegram_id)
         lessons = tuple(lesson for lesson in lessons if lesson.subject not in hidden)
@@ -268,7 +301,7 @@ def build_router(
         markup = main_keyboard(selected_person_of(user))
         hidden = await users.hidden_subjects(user.telegram_id)
         lessons = tuple(
-            lesson for lesson in lessons_week(user, monday) if lesson.subject not in hidden
+            lesson for lesson in await lessons_week(user, monday) if lesson.subject not in hidden
         )
         if not lessons:
             await message.answer("На эту неделю занятий нет.", reply_markup=markup)
@@ -315,7 +348,7 @@ def build_router(
         markup = main_keyboard(selected_person_of(user))
         today = datetime.now(timezone).date()
         current_monday = today - timedelta(days=today.weekday())
-        weeks = weeks_for(user, today)
+        weeks = await weeks_for(user, today)
         if not weeks:
             await message.answer("Доступных недель пока нет.", reply_markup=markup)
             return
@@ -520,5 +553,27 @@ def build_router(
         assert isinstance(callback.message, Message)
         await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
+
+    @router.message(F.text)
+    async def free_chat(message: Message) -> None:
+        text = (message.text or "").strip()
+        if message.from_user is None or not text:
+            return
+        user = await ensure_user(message.from_user.id)
+        person = selected_person_of(user)
+        markup = main_keyboard(person)
+        if assistant is None:
+            await message.answer(
+                "Напиши, что изменить в расписании, когда нейронка будет подключена.",
+                reply_markup=markup,
+            )
+            return
+        bot = getattr(message, "bot", None)
+        chat = getattr(message, "chat", None)
+        if bot is not None and chat is not None:
+            with contextlib.suppress(TelegramAPIError):
+                await bot.send_chat_action(chat.id, "typing")
+        reply = await assistant.reply(person, text)
+        await message.answer(reply, reply_markup=markup)
 
     return router
