@@ -18,6 +18,7 @@ def _model(row: UserRow) -> User:
         row.notifications_enabled,
         row.created_at,
         row.updated_at,
+        row.selected_person,
     )
 
 
@@ -39,12 +40,23 @@ class UserRepository:
                     telegram_id=telegram_id,
                     course=course,
                     group_name=group_name,
+                    selected_person="denis",
                     created_at=now,
                     updated_at=now,
                 )
                 session.add(row)
             else:
                 row.course, row.group_name, row.updated_at = course, group_name, now
+            await session.commit()
+            return _model(row)
+
+    async def set_selected_person(self, telegram_id: int, person: str) -> User | None:
+        async with self.sessions() as session:
+            row = await session.get(UserRow, telegram_id)
+            if row is None:
+                return None
+            row.selected_person = person
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
             await session.commit()
             return _model(row)
 

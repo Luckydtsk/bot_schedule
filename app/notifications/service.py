@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from html import escape
 
@@ -8,11 +9,19 @@ from app.schedule.diff import changes_by_group
 from app.schedule.models import LessonChange
 from app.users.repository import UserRepository
 
+log = logging.getLogger(__name__)
+
 
 class NotificationService:
     def __init__(self, users: UserRepository, send: Callable[[int, str], Awaitable[None]]) -> None:
         self.users = users
         self.send = send
+
+    async def _safe_send(self, telegram_id: int, text: str) -> None:
+        try:
+            await self.send(telegram_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s", telegram_id)
 
     async def notify_groups(self, groups: tuple[str, ...]) -> None:
         for group in groups:
@@ -22,7 +31,7 @@ class NotificationService:
                 "и проверьте актуальные пары."
             )
             for user in await self.users.subscribers(group):
-                await self.send(user.telegram_id, message)
+                await self._safe_send(user.telegram_id, message)
 
     async def notify(self, changes: tuple[LessonChange, ...]) -> None:
         for group, group_changes in changes_by_group(changes).items():
@@ -41,4 +50,4 @@ class NotificationService:
                     continue
                 messages = split_messages(format_changes(visible))
                 for message in messages:
-                    await self.send(user.telegram_id, message)
+                    await self._safe_send(user.telegram_id, message)

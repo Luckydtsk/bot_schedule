@@ -17,6 +17,8 @@ from app.calendar.http import create_calendar_app
 from app.calendar.service import CalendarService
 from app.config import Settings
 from app.notifications.service import NotificationService
+from app.people import DENIS_GROUP
+from app.schedule.models import keep_group
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
 from app.schedule.service import ScheduleService
@@ -35,7 +37,8 @@ async def run() -> None:
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     users = UserRepository(database.sessions)
     schedules_repo = ScheduleRepository(database.sessions)
-    schedules = ScheduleService(await schedules_repo.latest())
+    latest = await schedules_repo.latest()
+    schedules = ScheduleService(keep_group(latest, DENIS_GROUP) if latest else None)
     timezone = ZoneInfo(settings.timezone)
     calendars = CalendarService(users, schedules, timezone, settings.calendar_base_url)
 
@@ -50,6 +53,7 @@ async def run() -> None:
         schedules,
         notifier,
         timezone,
+        DENIS_GROUP,
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(

@@ -1,7 +1,7 @@
 from datetime import date, time
 
 from app.bot.formatters import format_schedule, split_messages
-from app.schedule.models import Lesson, Schedule, merge_schedules
+from app.schedule.models import Lesson, Schedule, keep_group, merge_schedules
 from app.schedule.service import ScheduleService
 
 
@@ -27,6 +27,14 @@ def test_week_schedules_are_merged_without_losing_groups():
     merged = merge_schedules((first, second))
     assert merged.courses == {1: ("G", "H")}
     assert merged.lessons == (lesson(), second_lesson)
+
+
+def test_keep_group_drops_other_groups():
+    mine = lesson()
+    other = Lesson("H", date(2026, 9, 2), 2, time(9, 40), time(11), "Другая")
+    filtered = keep_group(Schedule({1: ("G", "H")}, (mine, other)), "G")
+    assert filtered.courses == {1: ("G",)}
+    assert filtered.lessons == (mine,)
 
 
 def test_schedule_format_is_user_friendly():

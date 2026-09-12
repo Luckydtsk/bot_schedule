@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.notifications.service import NotificationService
-from app.schedule.models import merge_schedules
+from app.schedule.models import keep_group, merge_schedules
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
 from app.schedule.service import ScheduleService
@@ -25,61 +25,89 @@ class ScheduleUpdater:
         schedules: ScheduleService,
         notifications: NotificationService,
         timezone: ZoneInfo,
+        keep_group_name: str | None = None,
     ) -> None:
         self.source, self.parser, self.repository = source, parser, repository
         self.schedules, self.notifications, self.timezone = schedules, notifications, timezone
+        self.keep_group_name = keep_group_name
         self._lock = asyncio.Lock()
+        self._in_progress = False
+
+    def is_busy(self) -> bool:
+        return self._in_progress or self._lock.locked()
+
+    async def try_check(self) -> bool | None:
+        """Run a check only if idle. Returns None when another check is already running."""
+        if self._in_progress:
+            return None
+        self._in_progress = True
+        try:
+            async with self._lock:
+                return await self._check_body()
+        finally:
+            self._in_progress = False
 
     async def check(self) -> bool:
         async with self._lock:
-            today = datetime.now(self.timezone).date()
-            items = await self.source.current_and_next(today)
-            contents = [await self.source.download(item) for item in items]
-            digest = hashlib.sha256()
-            for item, content in zip(items, contents, strict=True):
-                digest.update(item.name.encode())
-                digest.update(b"\0")
-                digest.update(content)
-                digest.update(b"\0")
-            content_hash = digest.hexdigest()
-            if await self.repository.has_hash(content_hash):
-                log.info(
-                    "Schedule check complete: unchanged; files=%s; hash=%s",
-                    " | ".join(item.name for item in items),
-                    content_hash[:12],
-                )
-                return False
-            old = await self.repository.latest()
-            new = merge_schedules(tuple(self.parser.parse(content) for content in contents))
-            current = items[0]
-            await self.repository.save(
-                " | ".join(item.name for item in items),
-                current.week_number,
-                max(item.modified_date for item in items),
-                content_hash,
-                new,
-            )
-            self.schedules.replace(new)
-            changed_groups: tuple[str, ...] = ()
-            if old is not None:
-                groups = {lesson.group for lesson in old.lessons + new.lessons}
-                changed_groups = tuple(
-                    sorted(
-                        group
-                        for group in groups
-                        if set(old.for_group(group)) != set(new.for_group(group))
-                    )
-                )
-                if changed_groups:
-                    await self.notifications.notify_groups(changed_groups)
+            self._in_progress = True
+            try:
+                return await self._check_body()
+            finally:
+                self._in_progress = False
+
+    async def _check_body(self) -> bool:
+        today = datetime.now(self.timezone).date()
+        items = await self.source.current_and_next(today)
+        contents = [await self.source.download(item) for item in items]
+        digest = hashlib.sha256()
+        for item, content in zip(items, contents, strict=True):
+            digest.update(item.name.encode())
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+        content_hash = digest.hexdigest()
+        if await self.repository.has_hash(content_hash):
             log.info(
-                "Schedule update processed: files=%s; hash=%s; lessons=%s; changed_groups=%s",
+                "Schedule check complete: unchanged; files=%s; hash=%s",
                 " | ".join(item.name for item in items),
                 content_hash[:12],
-                len(new.lessons),
-                len(changed_groups),
             )
-            return True
+            return False
+        old = await self.repository.latest()
+        new = merge_schedules(tuple(self.parser.parse(content) for content in contents))
+        if self.keep_group_name:
+            new = keep_group(new, self.keep_group_name)
+            if old is not None:
+                old = keep_group(old, self.keep_group_name)
+        current = items[0]
+        await self.repository.save(
+            " | ".join(item.name for item in items),
+            current.week_number,
+            max(item.modified_date for item in items),
+            content_hash,
+            new,
+        )
+        self.schedules.replace(new)
+        changed_groups: tuple[str, ...] = ()
+        if old is not None:
+            groups = {lesson.group for lesson in old.lessons + new.lessons}
+            changed_groups = tuple(
+                sorted(
+                    group
+                    for group in groups
+                    if set(old.for_group(group)) != set(new.for_group(group))
+                )
+            )
+            if changed_groups:
+                await self.notifications.notify_groups(changed_groups)
+        log.info(
+            "Schedule update processed: files=%s; hash=%s; lessons=%s; changed_groups=%s",
+            " | ".join(item.name for item in items),
+            content_hash[:12],
+            len(new.lessons),
+            len(changed_groups),
+        )
+        return True
 
     async def run(self, interval: int) -> None:
         while True:

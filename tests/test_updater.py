@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import date, time
 from zoneinfo import ZoneInfo
@@ -107,3 +108,51 @@ async def test_changed_group_is_notified_without_field_level_diff():
 
     assert await updater.check() is True
     assert notifications.calls == [("G",)]
+
+
+async def test_try_check_skips_when_already_running():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowSource(Source):
+        async def current_and_next(self, today):
+            started.set()
+            await release.wait()
+            return await super().current_and_next(today)
+
+    updater = ScheduleUpdater(
+        SlowSource(), Parser(), Repo(), Schedules(), Notifications(), ZoneInfo("Asia/Yekaterinburg")
+    )
+    task = asyncio.create_task(updater.check())
+    await started.wait()
+    assert updater.is_busy()
+    assert await updater.try_check() is None
+    release.set()
+    assert await task is True
+    assert updater.is_busy() is False
+
+
+async def test_updater_keeps_only_configured_group():
+    class MultiParser:
+        def parse(self, content):
+            return Schedule(
+                {3: ("РИС-24-3", "ДРУ-24-1")},
+                (
+                    Lesson("РИС-24-3", date(2026, 9, 1), 1, time(8), time(9), "Моя пара"),
+                    Lesson("ДРУ-24-1", date(2026, 9, 1), 1, time(8), time(9), "Чужая пара"),
+                ),
+            )
+
+    schedules = Schedules()
+    updater = ScheduleUpdater(
+        Source(),
+        MultiParser(),
+        Repo(),
+        schedules,
+        Notifications(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        "РИС-24-3",
+    )
+    assert await updater.check() is True
+    assert schedules.value.courses == {3: ("РИС-24-3",)}
+    assert [lesson.group for lesson in schedules.value.lessons] == ["РИС-24-3"]

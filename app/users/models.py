@@ -10,3 +10,4 @@ class User:
     notifications_enabled: bool
     created_at: datetime
     updated_at: datetime
+    selected_person: str = "denis"

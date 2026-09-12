@@ -17,9 +17,29 @@ class Users:
 
     async def save(self, user_id, course, group):
         self.saved = (user_id, course, group)
+        selected = getattr(self.user, "selected_person", "denis") if self.user else "denis"
+        notifications = getattr(self.user, "notifications_enabled", True) if self.user else True
+        self.user = SimpleNamespace(
+            telegram_id=user_id,
+            course=course,
+            group_name=group,
+            notifications_enabled=notifications,
+            selected_person=selected,
+        )
+        return self.user
+
+    async def set_selected_person(self, user_id, person):
+        if self.user is None:
+            await self.save(user_id, 3, "РИС-24-3")
+        self.user.selected_person = person
+        return self.user
 
     async def toggle_notifications(self, user_id):
-        self.user = SimpleNamespace(notifications_enabled=False)
+        enabled = not getattr(self.user, "notifications_enabled", True)
+        if self.user is None:
+            self.user = SimpleNamespace(notifications_enabled=enabled, selected_person="denis")
+        else:
+            self.user.notifications_enabled = enabled
         return self.user
 
     async def hidden_subjects(self, user_id):
@@ -131,65 +151,63 @@ class Calendars:
 async def test_start_and_settings_flows(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
     users = Users()
-    service = ScheduleService(Schedule({4: ("РИС-23-3",)}, ()))
+    service = ScheduleService(Schedule({3: ("РИС-24-3",)}, ()))
     router = handlers.build_router(users, service, ZoneInfo("Asia/Yekaterinburg"))
     message = FakeMessage()
     await callbacks(router, "message")["start"](message)
-    assert "уровень образования" in message.answers[0][0]
-    users.user = SimpleNamespace(group_name="РИС-23-3", notifications_enabled=True)
+    assert users.saved == (7, 3, "РИС-24-3")
+    assert "Что показать?" in message.answers[0][0]
+    assert "уровень образования" not in message.answers[0][0]
+    row = [button.text for button in message.answers[0][1].keyboard[0]]
+    assert row == ["Саша", "Денис ✓"]
     message = FakeMessage()
     await callbacks(router, "message")["settings"](message)
     assert message.deleted == 1
-    assert "Группа: РИС-23-3" in message.answers[0][0]
+    assert "Сменить группу" not in message.answers[0][0]
+    assert "Сейчас: Денис" in message.answers[0][0]
+    assert "Группа: РИС-24-3" in message.answers[0][0]
 
 
-async def test_education_program_course_and_group_selection(monkeypatch):
+async def test_today_registers_without_group_picker(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
     users = Users()
     router = handlers.build_router(
-        users, ScheduleService(Schedule({4: ("РИС-23-3",)}, ())), ZoneInfo("Asia/Yekaterinburg")
+        users, ScheduleService(Schedule({3: ("РИС-24-3",)}, ())), ZoneInfo("Asia/Yekaterinburg")
     )
-    callback_handlers = callbacks(router, "callback_query")
-
-    bachelor = FakeCallback("education:bachelor")
-    await callback_handlers["bachelor"](bachelor)
-    assert "образовательную программу" in bachelor.message.edits[0][0]
-
-    program = FakeCallback("program:РИС")
-    await callback_handlers["program"](program)
-    assert "Выбери курс" in program.message.edits[0][0]
-
-    course = FakeCallback("course:РИС:4")
-    await callback_handlers["course"](course)
-    assert "выбери группу" in course.message.edits[0][0]
-    group = FakeCallback("group:4:РИС-23-3")
-    await callback_handlers["group"](group)
-    assert users.saved == (7, 4, "РИС-23-3") and "Готово" in group.message.answers[0][0]
+    message = FakeMessage()
+    await callbacks(router, "message")["today"](message)
+    assert users.saved == (7, 3, "РИС-24-3")
+    assert "Сегодня занятий нет." in message.answers[0][0]
 
 
-async def test_master_program_is_placeholder(monkeypatch):
+async def test_sasha_and_denis_person_buttons(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
+    users = Users(
+        SimpleNamespace(
+            telegram_id=7,
+            group_name="РИС-24-3",
+            notifications_enabled=True,
+            selected_person="denis",
+        )
+    )
     router = handlers.build_router(
-        Users(),
-        ScheduleService(Schedule({4: ("РИС-23-3",)}, ())),
+        users,
+        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
         ZoneInfo("Asia/Yekaterinburg"),
     )
-    master = FakeCallback("education:master")
-    await callbacks(router, "callback_query")["master"](master)
-    assert "скоро появится" in master.message.edits[0][0]
+    choose_person = callbacks(router, "message")["choose_person"]
 
+    sasha = FakeMessage("Саша")
+    await choose_person(sasha)
+    assert users.user.selected_person == "sasha"
+    assert sasha.answers[0][0] == "Выбран профиль Саши."
+    assert [button.text for button in sasha.answers[0][1].keyboard[0]] == ["Саша ✓", "Денис"]
 
-async def test_today_tomorrow_week_require_registration(monkeypatch):
-    monkeypatch.setattr(handlers, "Message", FakeMessage)
-    users = Users()
-    router = handlers.build_router(
-        users, ScheduleService(Schedule({1: ("G",)}, ())), ZoneInfo("Asia/Yekaterinburg")
-    )
-    message_handlers = callbacks(router, "message")
-    for name in ("today", "tomorrow", "week"):
-        message = FakeMessage()
-        await message_handlers[name](message)
-        assert "уровень образования" in message.answers[0][0]
+    denis = FakeMessage("Денис")
+    await choose_person(denis)
+    assert users.user.selected_person == "denis"
+    assert denis.answers[0][0] == "Выбран профиль Дениса."
+    assert [button.text for button in denis.answers[0][1].keyboard[0]] == ["Саша", "Денис ✓"]
 
 
 async def test_week_menu_shows_current_and_next_week(monkeypatch):
@@ -198,11 +216,20 @@ async def test_week_menu_shows_current_and_next_week(monkeypatch):
     today = datetime.now(timezone).date()
     monday = today - timedelta(days=today.weekday())
     lessons = (
-        Lesson("G", monday, 1, time(8), time(9), "Текущая пара"),
-        Lesson("G", monday + timedelta(days=7), 1, time(8), time(9), "Следующая пара"),
+        Lesson("РИС-24-3", monday, 1, time(8), time(9), "Текущая пара"),
+        Lesson("РИС-24-3", monday + timedelta(days=7), 1, time(8), time(9), "Следующая пара"),
     )
-    users = Users(SimpleNamespace(telegram_id=7, group_name="G", notifications_enabled=True))
-    router = handlers.build_router(users, ScheduleService(Schedule({1: ("G",)}, lessons)), timezone)
+    users = Users(
+        SimpleNamespace(
+            telegram_id=7,
+            group_name="РИС-24-3",
+            notifications_enabled=True,
+            selected_person="denis",
+        )
+    )
+    router = handlers.build_router(
+        users, ScheduleService(Schedule({3: ("РИС-24-3",)}, lessons)), timezone
+    )
 
     message = FakeMessage()
     await callbacks(router, "message")["week"](message)
@@ -220,10 +247,12 @@ async def test_week_menu_shows_current_and_next_week(monkeypatch):
 
 async def test_calendar_subscription_flow(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
-    users = Users(SimpleNamespace(group_name="РИС-23-3", notifications_enabled=True))
+    users = Users(
+        SimpleNamespace(group_name="РИС-24-3", notifications_enabled=True, selected_person="denis")
+    )
     router = handlers.build_router(
         users,
-        ScheduleService(Schedule({4: ("РИС-23-3",)}, ())),
+        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
         ZoneInfo("Asia/Yekaterinburg"),
         calendars=Calendars(),
     )
@@ -253,3 +282,84 @@ async def test_calendar_subscription_flow(monkeypatch):
     confirm = FakeCallback("calendar:rotate:confirm")
     await callback_handlers["calendar_rotate_confirm"](confirm)
     assert "replaced.ics" in confirm.message.edits[0][0]
+
+
+class ForceUpdate:
+    def __init__(self, *, busy=False, result=False, error: Exception | None = None):
+        self.busy = busy
+        self.result = result
+        self.error = error
+        self.calls = 0
+
+    def is_busy(self):
+        return self.busy
+
+    async def try_check(self):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+async def test_manual_update_cooldown_and_errors(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    force = ForceUpdate(result=False)
+    router = handlers.build_router(
+        Users(
+            SimpleNamespace(
+                group_name="РИС-24-3", notifications_enabled=True, selected_person="denis"
+            )
+        ),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        force_update=force,
+    )
+    update = callbacks(router, "callback_query")["update"]
+
+    first = FakeCallback("settings:update")
+    await update(first)
+    assert force.calls == 1
+    assert "уже актуально" in first.message.edits[0][0]
+
+    second = FakeCallback("settings:update")
+    await update(second)
+    assert force.calls == 1
+    assert "Слишком частый запрос" in second.message.edits[0][0]
+
+
+async def test_manual_update_reports_busy_and_failures(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    busy = ForceUpdate(busy=True)
+    router = handlers.build_router(
+        Users(
+            SimpleNamespace(
+                group_name="РИС-24-3", notifications_enabled=True, selected_person="denis"
+            )
+        ),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        force_update=busy,
+    )
+    update = callbacks(router, "callback_query")["update"]
+
+    callback = FakeCallback("settings:update")
+    await update(callback)
+    assert busy.calls == 0
+    assert "уже выполняется" in callback.message.edits[0][0]
+
+    failing = ForceUpdate(error=RuntimeError("yandex down"))
+    router = handlers.build_router(
+        Users(
+            SimpleNamespace(
+                group_name="РИС-24-3", notifications_enabled=True, selected_person="denis"
+            )
+        ),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        force_update=failing,
+    )
+    update = callbacks(router, "callback_query")["update"]
+    failed = FakeCallback("settings:update")
+    await update(failed)
+    assert failing.calls == 1
+    assert "Не удалось обновить" in failed.message.edits[0][0]

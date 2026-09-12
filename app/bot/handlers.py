@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
+import time
 from datetime import date, datetime, timedelta
 from html import escape
 from zoneinfo import ZoneInfo
@@ -27,18 +29,42 @@ from aiogram.types import (
 
 from app.bot.formatters import format_day, format_schedule
 from app.calendar.service import CalendarService
+from app.people import (
+    DENIS,
+    DENIS_COURSE,
+    DENIS_GROUP,
+    PERSON_BUTTONS,
+    PERSON_LABELS,
+    PERSON_PROFILE_TEXT,
+    SASHA,
+    SASHA_GROUP,
+    person_button_label,
+    person_from_button,
+)
+from app.schedule import sasha as sasha_schedule
+from app.schedule import tutoring
 from app.schedule.models import Lesson
 from app.schedule.service import ScheduleService
+from app.users.models import User
 from app.users.repository import UserRepository
 
-MAIN = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")],
-        [KeyboardButton(text="Неделя"), KeyboardButton(text="Профиль")],
-    ],
-    resize_keyboard=True,
-)
 SUBJECTS_PER_PAGE = 12
+MANUAL_UPDATE_COOLDOWN_SECONDS = 120
+log = logging.getLogger(__name__)
+
+
+def main_keyboard(selected: str = DENIS) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=person_button_label(SASHA, selected)),
+                KeyboardButton(text=person_button_label(DENIS, selected)),
+            ],
+            [KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")],
+            [KeyboardButton(text="Неделя"), KeyboardButton(text="Профиль")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def inline(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
@@ -47,6 +73,10 @@ def inline(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=text, callback_data=data)] for text, data in items
         ]
     )
+
+
+def selected_person_of(user: User) -> str:
+    return user.selected_person or DENIS
 
 
 def build_router(
@@ -59,6 +89,7 @@ def build_router(
 ) -> Router:
     router = Router()
     pending_broadcasts: dict[int, str] = {}
+    last_manual_updates: dict[int, float] = {}
 
     def subject_catalog(group: str) -> tuple[str, ...]:
         return tuple(sorted({lesson.subject for lesson in schedules.schedule.for_group(group)}))
@@ -66,33 +97,48 @@ def build_router(
     def subject_key(subject: str) -> str:
         return hashlib.sha256(subject.encode()).hexdigest()[:12]
 
-    def program_for_group(group: str) -> str:
-        return group.split("-", 1)[0].strip()
+    def active_group(user: User) -> str:
+        return SASHA_GROUP if selected_person_of(user) == SASHA else user.group_name
 
-    def programs() -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    program_for_group(group)
-                    for groups in schedules.schedule.courses.values()
-                    for group in groups
-                }
-            )
-        )
+    def active_subjects(user: User) -> tuple[str, ...]:
+        if selected_person_of(user) == SASHA:
+            return sasha_schedule.subjects()
+        return tuple(sorted({*subject_catalog(user.group_name), *tutoring.subjects()}))
 
-    def program_courses(program: str) -> tuple[int, ...]:
-        return tuple(
-            course
-            for course, groups in sorted(schedules.schedule.courses.items())
-            if any(program_for_group(group) == program for group in groups)
-        )
+    def _with_tutoring(
+        lessons: tuple[Lesson, ...], extra: tuple[Lesson, ...]
+    ) -> tuple[Lesson, ...]:
+        return tuple(sorted((*lessons, *extra), key=lambda item: (item.date, item.start_time)))
+
+    def lessons_on(user: User, day: date) -> tuple[Lesson, ...]:
+        if selected_person_of(user) == SASHA:
+            return sasha_schedule.for_date(day)
+        return _with_tutoring(schedules.for_date(user.group_name, day), tutoring.for_date(day))
+
+    def lessons_week(user: User, day: date) -> tuple[Lesson, ...]:
+        if selected_person_of(user) == SASHA:
+            return sasha_schedule.for_week(day)
+        return _with_tutoring(schedules.for_week(user.group_name, day), tutoring.for_week(day))
+
+    def weeks_for(user: User, today: date) -> tuple[date, ...]:
+        if selected_person_of(user) == SASHA:
+            return sasha_schedule.available_weeks(today)
+        university = schedules.available_weeks(user.group_name, today)
+        return tuple(sorted({*university, *tutoring.available_weeks(today)}))
+
+    async def ensure_user(telegram_id: int) -> User:
+        user = await users.get(telegram_id)
+        if user is None or user.group_name != DENIS_GROUP:
+            return await users.save(telegram_id, DENIS_COURSE, DENIS_GROUP)
+        return user
+
+    async def keyboard_for(telegram_id: int) -> ReplyKeyboardMarkup:
+        user = await ensure_user(telegram_id)
+        return main_keyboard(selected_person_of(user))
 
     async def show_subjects(message: Message, telegram_id: int, page: int = 0) -> None:
-        user = await users.get(telegram_id)
-        if user is None:
-            await choose_education(message)
-            return
-        subjects = subject_catalog(user.group_name)
+        user = await ensure_user(telegram_id)
+        subjects = active_subjects(user)
         hidden = await users.hidden_subjects(telegram_id)
         pages = max(1, (len(subjects) + SUBJECTS_PER_PAGE - 1) // SUBJECTS_PER_PAGE)
         page = min(max(page, 0), pages - 1)
@@ -127,55 +173,29 @@ def build_router(
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
-    async def choose_education(message: Message, *, edit: bool = False) -> None:
-        text = (
-            "Бот расписания\n\nПокажу пары и сообщу, если что-то изменится.\n\n"
-            "Выбери уровень образования:"
-        )
-        markup = inline(
-            [
-                ("Бакалавриат", "education:bachelor"),
-                ("Магистратура", "education:master"),
-            ]
-        )
-        if edit:
-            await message.edit_text(text, reply_markup=markup)
-        else:
-            await message.answer(text, reply_markup=markup)
-
-    async def choose_program(message: Message) -> None:
-        items = [(program, f"program:{program}") for program in programs()]
-        items.append(("‹ Назад", "education:back"))
-        await message.edit_text(
-            "<b>Бакалавриат</b>\n\nВыбери образовательную программу:",
-            reply_markup=inline(items),
-        )
-
     async def show_profile(message: Message, telegram_id: int, *, edit: bool = False) -> None:
-        user = await users.get(telegram_id)
-        if not user:
-            await choose_education(message, edit=edit)
-            return
+        user = await ensure_user(telegram_id)
         state = "включены" if user.notifications_enabled else "выключены"
+        person = PERSON_LABELS[selected_person_of(user)]
         keyboard = inline(
             [
-                ("Сменить группу", "settings:group"),
                 ("Мои предметы", "settings:subjects"),
                 (f"Уведомления: {state}", "settings:notify"),
                 ("📅 Календарь", "settings:calendar"),
                 ("Обновить расписание", "settings:update"),
             ]
         )
-        text = f"<b>Профиль</b>\n\nГруппа: {user.group_name}\nУведомления: {state}"
+        text = (
+            f"<b>Профиль</b>\n\n"
+            f"Сейчас: {person}\nГруппа: {active_group(user)}\nУведомления: {state}"
+        )
         if edit:
             await message.edit_text(text, reply_markup=keyboard)
         else:
             await message.answer(text, reply_markup=keyboard)
 
     async def show_calendar_menu(message: Message, telegram_id: int) -> None:
-        if await users.get(telegram_id) is None:
-            await choose_education(message, edit=True)
-            return
+        await ensure_user(telegram_id)
         keyboard = inline(
             [
                 ("🔗 Получить ссылку", "calendar:url"),
@@ -195,14 +215,14 @@ def build_router(
 
     @router.message(Command("start"))
     async def start(message: Message) -> None:
-        user = await users.get(message.from_user.id) if message.from_user else None
-        if user:
-            await message.answer(
-                f"Группа {user.group_name}\n\nЧто показать?",
-                reply_markup=MAIN,
-            )
-        else:
-            await choose_education(message)
+        if message.from_user is None:
+            return
+        user = await ensure_user(message.from_user.id)
+        person = PERSON_LABELS[selected_person_of(user)]
+        await message.answer(
+            f"Сейчас расписание: {person}.\n\nЧто показать?",
+            reply_markup=main_keyboard(selected_person_of(user)),
+        )
 
     @router.message(Command("broadcast"))
     async def broadcast(message: Message) -> None:
@@ -270,92 +290,25 @@ def build_router(
         await callback.message.edit_text("Рассылка отменена.")
         await callback.answer()
 
-    @router.callback_query(F.data == "education:bachelor")
-    async def bachelor(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await choose_program(callback.message)
-        await callback.answer()
-
-    @router.callback_query(F.data == "education:master")
-    async def master(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await callback.message.edit_text(
-            "<b>Магистратура</b>\n\nРасписание магистратуры скоро появится.",
-            reply_markup=inline([("‹ Назад", "education:back")]),
-        )
-        await callback.answer()
-
-    @router.callback_query(F.data == "education:back")
-    async def education_back(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await choose_education(callback.message, edit=True)
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("program:"))
-    async def program(callback: CallbackQuery) -> None:
-        assert callback.data is not None and isinstance(callback.message, Message)
-        value = callback.data.split(":", 1)[1]
-        items = [
-            (f"{course} курс", f"course:{value}:{course}") for course in program_courses(value)
-        ]
-        items.append(("‹ Назад", "education:bachelor"))
-        await callback.message.edit_text(
-            f"<b>Программа {value}</b>\n\nВыбери курс:",
-            reply_markup=inline(items),
-        )
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("course:"))
-    async def course(callback: CallbackQuery) -> None:
-        assert callback.data is not None and isinstance(callback.message, Message)
-        _, program_name, course_raw = callback.data.split(":", 2)
-        value = int(course_raw)
-        groups = tuple(
-            group for group in schedules.groups(value) if program_for_group(group) == program_name
-        )
-        items = [(group, f"group:{value}:{group}") for group in groups]
-        items.append(("‹ Назад", f"program:{program_name}"))
-        await callback.message.edit_text(
-            "Теперь выбери группу:",
-            reply_markup=inline(items),
-        )
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("group:"))
-    async def group(callback: CallbackQuery) -> None:
-        assert callback.data is not None and isinstance(callback.message, Message)
-        _, course_value, group_name = callback.data.split(":", 2)
-        if callback.from_user:
-            await users.save(callback.from_user.id, int(course_value), group_name)
-        with contextlib.suppress(TelegramBadRequest):
-            await callback.message.delete()
-        await callback.message.answer(
-            "Готово.\n\n"
-            f"Твоя группа: {group_name}\n"
-            "Об изменениях расписания я сообщу автоматически.",
-            reply_markup=MAIN,
-        )
-        await callback.answer()
-
     async def show(message: Message, offset: int | None) -> None:
-        user = await users.get(message.from_user.id) if message.from_user else None
-        if not user:
-            await choose_education(message)
+        if message.from_user is None:
             return
+        user = await ensure_user(message.from_user.id)
+        markup = main_keyboard(selected_person_of(user))
         today = datetime.now(timezone).date()
         lessons = (
-            schedules.for_week(user.group_name, today)
+            lessons_week(user, today)
             if offset is None
-            else schedules.for_date(user.group_name, today + timedelta(days=offset))
+            else lessons_on(user, today + timedelta(days=offset))
         )
         hidden = await users.hidden_subjects(user.telegram_id)
         lessons = tuple(lesson for lesson in lessons if lesson.subject not in hidden)
         empty = "Сегодня занятий нет." if offset == 0 else "На этот день занятий нет."
         if not lessons:
-            await message.answer(empty, reply_markup=MAIN)
+            await message.answer(empty, reply_markup=markup)
             return
         if offset is not None:
-            await message.answer(format_schedule(lessons, empty), reply_markup=MAIN)
+            await message.answer(format_schedule(lessons, empty), reply_markup=markup)
             return
         days: dict[date, list[Lesson]] = {}
         for lesson in lessons:
@@ -363,22 +316,18 @@ def build_router(
         for index, (day, day_lessons) in enumerate(days.items()):
             await message.answer(
                 format_day(day, tuple(day_lessons)),
-                reply_markup=MAIN if index == len(days) - 1 else None,
+                reply_markup=markup if index == len(days) - 1 else None,
             )
 
     async def send_selected_week(message: Message, telegram_id: int, monday: date) -> None:
-        user = await users.get(telegram_id)
-        if user is None:
-            await choose_education(message)
-            return
+        user = await ensure_user(telegram_id)
+        markup = main_keyboard(selected_person_of(user))
         hidden = await users.hidden_subjects(user.telegram_id)
         lessons = tuple(
-            lesson
-            for lesson in schedules.for_week(user.group_name, monday)
-            if lesson.subject not in hidden
+            lesson for lesson in lessons_week(user, monday) if lesson.subject not in hidden
         )
         if not lessons:
-            await message.answer("На эту неделю занятий нет.", reply_markup=MAIN)
+            await message.answer("На эту неделю занятий нет.", reply_markup=markup)
             return
         days: dict[date, list[Lesson]] = {}
         for lesson in lessons:
@@ -386,8 +335,22 @@ def build_router(
         for index, (day, day_lessons) in enumerate(days.items()):
             await message.answer(
                 format_day(day, tuple(day_lessons)),
-                reply_markup=MAIN if index == len(days) - 1 else None,
+                reply_markup=markup if index == len(days) - 1 else None,
             )
+
+    @router.message(F.text.in_(PERSON_BUTTONS))
+    async def choose_person(message: Message) -> None:
+        if message.from_user is None:
+            return
+        person = person_from_button(message.text or "")
+        if person is None:
+            return
+        await ensure_user(message.from_user.id)
+        await users.set_selected_person(message.from_user.id, person)
+        await message.answer(
+            PERSON_PROFILE_TEXT[person],
+            reply_markup=main_keyboard(person),
+        )
 
     @router.message(Command("today"))
     @router.message(F.text == "Сегодня")
@@ -402,15 +365,15 @@ def build_router(
     @router.message(Command("week"))
     @router.message(F.text == "Неделя")
     async def week(message: Message) -> None:
-        user = await users.get(message.from_user.id) if message.from_user else None
-        if user is None:
-            await choose_education(message)
+        if message.from_user is None:
             return
+        user = await ensure_user(message.from_user.id)
+        markup = main_keyboard(selected_person_of(user))
         today = datetime.now(timezone).date()
         current_monday = today - timedelta(days=today.weekday())
-        weeks = schedules.available_weeks(user.group_name, today)
+        weeks = weeks_for(user, today)
         if not weeks:
-            await message.answer("Доступных недель пока нет.", reply_markup=MAIN)
+            await message.answer("Доступных недель пока нет.", reply_markup=markup)
             return
         items = []
         for monday in weeks:
@@ -441,15 +404,10 @@ def build_router(
                 await message.delete()
             await show_profile(message, message.from_user.id)
 
-    @router.callback_query(F.data == "settings:group")
-    async def change_group(callback: CallbackQuery) -> None:
-        assert isinstance(callback.message, Message)
-        await choose_education(callback.message, edit=True)
-        await callback.answer()
-
     @router.callback_query(F.data == "settings:notify")
     async def notify(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
+        await ensure_user(callback.from_user.id)
         await users.toggle_notifications(callback.from_user.id)
         await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
@@ -471,24 +429,20 @@ def build_router(
     async def subjects_toggle(callback: CallbackQuery) -> None:
         assert callback.data is not None and isinstance(callback.message, Message)
         _, _, page_raw, key = callback.data.split(":", 3)
-        user = await users.get(callback.from_user.id)
-        if user is not None:
-            match = next(
-                (
-                    subject
-                    for subject in subject_catalog(user.group_name)
-                    if subject_key(subject) == key
-                ),
-                None,
-            )
-            if match is not None:
-                await users.toggle_hidden_subject(callback.from_user.id, match)
+        user = await ensure_user(callback.from_user.id)
+        match = next(
+            (subject for subject in active_subjects(user) if subject_key(subject) == key),
+            None,
+        )
+        if match is not None:
+            await users.toggle_hidden_subject(callback.from_user.id, match)
         await show_subjects(callback.message, callback.from_user.id, int(page_raw))
         await callback.answer()
 
     @router.callback_query(F.data == "subjects:reset")
     async def subjects_reset(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
+        await ensure_user(callback.from_user.id)
         await users.clear_hidden_subjects(callback.from_user.id)
         await show_subjects(callback.message, callback.from_user.id)
         await callback.answer("Все предметы снова отображаются")
@@ -496,11 +450,49 @@ def build_router(
     @router.callback_query(F.data == "settings:update")
     async def update(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
-        changed = await force_update.check() if force_update is not None else False  # type: ignore[attr-defined]
-        await callback.message.edit_text(
-            "Расписание обновлено." if changed else "Расписание уже актуально.",
-            reply_markup=inline([("‹ Назад", "settings:back")]),
-        )
+        back = inline([("‹ Назад", "settings:back")])
+        user_id = callback.from_user.id
+        now = time.monotonic()
+        elapsed = now - last_manual_updates.get(user_id, 0.0)
+        if elapsed < MANUAL_UPDATE_COOLDOWN_SECONDS:
+            wait_for = int(MANUAL_UPDATE_COOLDOWN_SECONDS - elapsed)
+            await callback.message.edit_text(
+                f"Слишком частый запрос. Подождите ещё {wait_for} с.",
+                reply_markup=back,
+            )
+            await callback.answer()
+            return
+        if force_update is not None and force_update.is_busy():  # type: ignore[attr-defined]
+            await callback.message.edit_text(
+                "Обновление уже выполняется. Попробуйте чуть позже.",
+                reply_markup=back,
+            )
+            await callback.answer()
+            return
+        last_manual_updates[user_id] = now
+        try:
+            if force_update is None:
+                changed: bool | None = False
+            else:
+                changed = await force_update.try_check()  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("Manual schedule update failed for user %s", user_id)
+            await callback.message.edit_text(
+                "Не удалось обновить расписание. Попробуйте позже.",
+                reply_markup=back,
+            )
+            await callback.answer()
+            return
+        if changed is None:
+            await callback.message.edit_text(
+                "Обновление уже выполняется. Попробуйте чуть позже.",
+                reply_markup=back,
+            )
+        else:
+            await callback.message.edit_text(
+                "Расписание обновлено." if changed else "Расписание уже актуально.",
+                reply_markup=back,
+            )
         await callback.answer()
 
     @router.callback_query(F.data == "settings:calendar")
@@ -520,11 +512,7 @@ def build_router(
             await callback.message.edit_text("Подписка временно недоступна.")
             await callback.answer()
             return
-        user = await users.get(callback.from_user.id)
-        if user is None:
-            await choose_education(callback.message, edit=True)
-            await callback.answer()
-            return
+        await ensure_user(callback.from_user.id)
         url = await calendars.subscription_url(callback.from_user.id)
         if url is None:
             await callback.message.edit_text(
@@ -554,9 +542,13 @@ def build_router(
             await callback.message.answer("Календарь временно недоступен.")
             await callback.answer()
             return
+        await ensure_user(callback.from_user.id)
         exported = await calendars.export_for_user(callback.from_user.id)
         if exported is None:
-            await callback.message.answer("Сначала выбери группу.")
+            await callback.message.answer(
+                "Расписание пока недоступно.",
+                reply_markup=await keyboard_for(callback.from_user.id),
+            )
             await callback.answer()
             return
         group_name, content = exported
@@ -610,6 +602,7 @@ def build_router(
         if calendars is None:
             await callback.message.edit_text("Подписка временно недоступна.")
         else:
+            await ensure_user(callback.from_user.id)
             url = await calendars.regenerate_subscription_url(callback.from_user.id)
             if url is None:
                 await callback.message.edit_text("Сначала настрой CALENDAR_BASE_URL.")

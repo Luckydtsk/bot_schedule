@@ -34,6 +34,15 @@ class Schedule:
         return tuple(x for x in self.lessons if x.group == group)
 
 
+def keep_group(schedule: Schedule, group: str) -> Schedule:
+    courses = {
+        course: tuple(item for item in groups if item == group)
+        for course, groups in schedule.courses.items()
+        if group in groups
+    }
+    return Schedule(courses, schedule.for_group(group))
+
+
 def merge_schedules(schedules: tuple[Schedule, ...]) -> Schedule:
     courses: dict[int, list[str]] = {}
     lessons: list[Lesson] = []

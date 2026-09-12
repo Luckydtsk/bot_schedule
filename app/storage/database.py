@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, inspect, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -22,6 +23,7 @@ class UserRow(Base):
     course: Mapped[int] = mapped_column(Integer)
     group_name: Mapped[str] = mapped_column(String(64), index=True)
     notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    selected_person: Mapped[str] = mapped_column(String(32), default="denis")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
@@ -62,6 +64,17 @@ class UserHiddenSubjectRow(Base):
     subject_name: Mapped[str] = mapped_column(String(512), primary_key=True)
 
 
+def _ensure_user_columns(connection: Connection) -> None:
+    inspector = inspect(connection)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "selected_person" not in columns:
+        connection.execute(
+            text("ALTER TABLE users ADD COLUMN selected_person VARCHAR(32) DEFAULT 'denis'")
+        )
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine: AsyncEngine = create_async_engine(url)
@@ -72,6 +85,7 @@ class Database:
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(_ensure_user_columns)
 
     async def close(self) -> None:
         await self.engine.dispose()

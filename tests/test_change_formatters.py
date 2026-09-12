@@ -6,9 +6,7 @@ from app.schedule.models import Lesson, LessonChange
 
 
 def test_modified_lesson_is_compact_and_human_readable():
-    before = Lesson(
-        "G1", date(2026, 9, 4), 2, time(9, 40), time(11), "Разработка AI-агентов"
-    )
+    before = Lesson("G1", date(2026, 9, 4), 2, time(9, 40), time(11), "Разработка AI-агентов")
     after = replace(before, url="https://example.com/very-long-meeting-link")
 
     text = format_changes((LessonChange("modified", "G1", before, after),))

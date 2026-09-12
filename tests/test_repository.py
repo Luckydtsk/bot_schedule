@@ -92,3 +92,13 @@ async def test_hidden_subjects_toggle_and_reset(db):
     await repo.toggle_hidden_subject(10, "NLP")
     await repo.clear_hidden_subjects(10)
     assert await repo.hidden_subjects(10) == frozenset()
+
+
+async def test_selected_person_persists_and_survives_group_save(db):
+    repo = UserRepository(db.sessions)
+    await repo.save(10, 3, "РИС-24-3")
+    assert (await repo.get(10)).selected_person == "denis"
+    updated = await repo.set_selected_person(10, "sasha")
+    assert updated and updated.selected_person == "sasha"
+    await repo.save(10, 3, "РИС-24-3")
+    assert (await repo.get(10)).selected_person == "sasha"
