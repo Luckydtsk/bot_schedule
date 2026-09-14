@@ -1,1 +1,1 @@
-"""Cloud LLM assistant and voice transcription for schedule edits."""
+"""Cloud LLM assistant for schedule edits."""

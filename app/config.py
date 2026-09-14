@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_model: str = "qwen/qwen3-32b"
-    whisper_model: str = "openai/whisper-large-v3"
 
     @property
     def resolved_llm_key(self) -> str:

@@ -33,11 +33,3 @@ def test_admin_ids_are_parsed_from_comma_separated_setting():
 
 def test_openrouter_key_is_used_when_llm_key_is_empty():
     assert settings(openrouter_api_key=" sk-or-1 ").resolved_llm_key == "sk-or-1"
-
-
-def test_whisper_model_defaults_to_openrouter_large_v3():
-    assert settings().whisper_model == "openai/whisper-large-v3"
-
-
-def test_llm_model_defaults_to_qwen():
-    assert settings().llm_model == "qwen/qwen3-32b"

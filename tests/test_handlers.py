@@ -67,12 +67,9 @@ class FakeBot:
 
 
 class FakeMessage:
-    def __init__(self, text=None, user_id=7, voice=None, bot=None):
+    def __init__(self, text=None, user_id=7):
         self.from_user = SimpleNamespace(id=user_id)
-        self.chat = SimpleNamespace(id=user_id)
         self.text = text
-        self.voice = voice
-        self.bot = bot
         self.answers = []
         self.edits = []
         self.documents = []
@@ -248,87 +245,6 @@ async def test_free_chat_uses_selected_profile(monkeypatch):
     await callbacks(router, "message")["free_chat"](message)
     assert assistant.calls == [("sasha", "Соню перенеси на воскресенье")]
     assert message.answers[0][0] == "ok:sasha:Соню перенеси на воскресенье"
-
-
-async def test_voice_chat_transcribes_and_applies(monkeypatch):
-    monkeypatch.setattr(handlers, "Message", FakeMessage)
-
-    class Assistant:
-        def __init__(self):
-            self.calls = []
-
-        async def reply(self, person, text):
-            self.calls.append((person, text))
-            return f"ok:{person}:{text}"
-
-    class Transcriber:
-        enabled = True
-
-        async def transcribe(self, audio, *, audio_format="ogg"):
-            assert audio == b"ogg-bytes"
-            assert audio_format == "ogg"
-            return "Соню перенеси на воскресенье"
-
-    async def download(_message):
-        return b"ogg-bytes"
-
-    monkeypatch.setattr(handlers, "download_voice_bytes", download)
-    users = Users(
-        SimpleNamespace(
-            telegram_id=7,
-            group_name="РИС-24-3",
-            notifications_enabled=True,
-            selected_person="denis",
-        )
-    )
-    assistant = Assistant()
-    router = handlers.build_router(
-        users,
-        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
-        ZoneInfo("Asia/Yekaterinburg"),
-        assistant=assistant,
-        transcriber=Transcriber(),
-    )
-    message = FakeMessage(voice=SimpleNamespace(file_size=120))
-    await callbacks(router, "message")["voice_chat"](message)
-    assert assistant.calls == [("denis", "Соню перенеси на воскресенье")]
-    assert message.answers[0][0] == (
-        "Распознано: Соню перенеси на воскресенье\n\nok:denis:Соню перенеси на воскресенье"
-    )
-
-
-async def test_voice_chat_shows_transcription_error(monkeypatch):
-    monkeypatch.setattr(handlers, "Message", FakeMessage)
-
-    class Transcriber:
-        enabled = True
-
-        async def transcribe(self, audio, *, audio_format="ogg"):
-            raise RuntimeError("400 invalid audio")
-
-    async def download(_message):
-        return b"ogg-bytes"
-
-    monkeypatch.setattr(handlers, "download_voice_bytes", download)
-    users = Users(
-        SimpleNamespace(
-            telegram_id=7,
-            group_name="РИС-24-3",
-            notifications_enabled=True,
-            selected_person="denis",
-        )
-    )
-    router = handlers.build_router(
-        users,
-        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
-        ZoneInfo("Asia/Yekaterinburg"),
-        transcriber=Transcriber(),
-    )
-    message = FakeMessage(voice=SimpleNamespace(file_size=120))
-    await callbacks(router, "message")["voice_chat"](message)
-    text = message.answers[0][0]
-    assert "Не получилось распознать голосовое" in text
-    assert "400 invalid audio" in text
 
 
 async def test_week_menu_shows_current_and_next_week(monkeypatch):
