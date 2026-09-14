@@ -78,7 +78,7 @@ async def test_assistant_moves_tutoring_via_tools(tmp_path):
         ZoneInfo("Asia/Yekaterinburg"),
         "test-key",
         "https://openrouter.ai/api/v1",
-        "google/gemini-2.5-flash",
+        "google/gemma-4-31b-it:free",
         post=post,
     )
     reply = await assistant.reply(DENIS, "Соню с пятницы перенеси на воскресенье в 12")
@@ -157,7 +157,7 @@ async def test_assistant_answers_university_schedule_questions(tmp_path):
         ZoneInfo("Asia/Yekaterinburg"),
         "test-key",
         "https://openrouter.ai/api/v1",
-        "google/gemini-2.5-flash",
+        "google/gemma-4-31b-it:free",
         post=post,
         schedules=schedules,
     )
@@ -179,10 +179,46 @@ async def test_assistant_without_key_explains_setup():
         ZoneInfo("Asia/Yekaterinburg"),
         "",
         "https://openrouter.ai/api/v1",
-        "google/gemini-2.5-flash",
+        "google/gemma-4-31b-it:free",
     )
     text = await assistant.reply(DENIS, "перенеси Соню")
     assert "не подключена" in text
+
+
+async def test_assistant_disables_reasoning_for_gemma():
+    calls = []
+
+    async def post(url, headers, body):
+        calls.append(body)
+        return {"choices": [{"message": {"content": "Завтра пар нет."}}]}
+
+    assistant = ScheduleAssistant(
+        EventRepository.__new__(EventRepository),
+        ZoneInfo("Asia/Yekaterinburg"),
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "google/gemma-4-31b-it:free",
+        post=post,
+    )
+    reply = await assistant.reply(DENIS, "что завтра?")
+    assert reply == "Завтра пар нет."
+    assert calls[0]["reasoning"] == {"enabled": False}
+
+
+async def test_assistant_explains_missing_credits():
+    async def post(url, headers, body):
+        raise RuntimeError('402 {"error":{"message":"This request requires credits"}}')
+
+    assistant = ScheduleAssistant(
+        EventRepository.__new__(EventRepository),
+        ZoneInfo("Asia/Yekaterinburg"),
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "google/gemma-4-31b-it:free",
+        post=post,
+    )
+    text = await assistant.reply(DENIS, "перенеси Соню")
+    assert "openrouter.ai/settings/credits" in text
 
 
 async def test_transcriber_sends_russian_audio_to_whisper():
@@ -231,14 +267,13 @@ async def test_transcriber_converts_telegram_opus_to_wav():
     assert calls == ["wav"]
 
 
-async def test_transcriber_uses_gemini_chat_before_whisper():
+async def test_transcriber_skips_gemini_audio_and_uses_whisper():
     calls = []
 
     async def post(url, headers, body):
-        calls.append((url, body["messages"][0]["content"][1]["type"]))
-        if url.endswith("/audio/transcriptions"):
-            raise RuntimeError("whisper should not run first")
-        return {"choices": [{"message": {"content": "Соню перенеси на воскресенье"}}]}
+        calls.append(url)
+        assert url.endswith("/audio/transcriptions")
+        return {"text": "Соню перенеси на воскресенье"}
 
     transcriber = VoiceTranscriber(
         "test-key",
@@ -246,11 +281,10 @@ async def test_transcriber_uses_gemini_chat_before_whisper():
         "openai/whisper-large-v3",
         post=post,
         use_ffmpeg=False,
-        chat_model="google/gemini-2.5-flash",
     )
     text = await transcriber.transcribe(b"ogg-bytes")
     assert text == "Соню перенеси на воскресенье"
-    assert calls == [("https://openrouter.ai/api/v1/chat/completions", "input_audio")]
+    assert calls == ["https://openrouter.ai/api/v1/audio/transcriptions"]
 
 
 async def test_transcriber_keeps_going_if_ffmpeg_raises():

@@ -217,7 +217,10 @@ class ScheduleAssistant:
         try:
             for _ in range(6):
                 payload = await self._complete(messages)
-                choice = payload["choices"][0]["message"]
+                error = payload.get("error")
+                if error:
+                    raise RuntimeError(str(error)[:300])
+                choice = (payload.get("choices") or [{}])[0].get("message") or {}
                 tool_calls = choice.get("tool_calls") or []
                 if not tool_calls:
                     return str(choice.get("content") or "Готово.").strip()
@@ -231,20 +234,27 @@ class ScheduleAssistant:
                             "content": result,
                         }
                     )
-        except Exception:
+        except Exception as exc:
             log.exception("Schedule assistant failed")
-            return "Не получилось обработать запрос. Попробуй ещё раз чуть позже."
+            detail = str(exc).split("\n")[0][:240]
+            if "402" in detail or "credit" in detail.casefold():
+                return (
+                    "На OpenRouter не хватает баланса. "
+                    "Пополни счёт: https://openrouter.ai/settings/credits"
+                )
+            return f"Не получилось обработать запрос. {detail}"
         return "Не получилось закончить ответ. Напиши ещё раз проще."
 
     async def _complete(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "tools": TOOLS,
             "tool_choice": "auto",
             "temperature": 0.1,
-            "reasoning": {"enabled": False},
         }
+        if any(name in self.model.casefold() for name in ("qwen", "gemma")):
+            body["reasoning"] = {"enabled": False}
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -253,12 +263,14 @@ class ScheduleAssistant:
         }
         if self._post is not None:
             return await self._post(f"{self.base_url}/chat/completions", headers, body)
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions", headers=headers, json=body
             )
-            response.raise_for_status()
-            return cast(dict[str, Any], response.json())
+            payload = cast(dict[str, Any], response.json())
+            if response.is_error:
+                raise RuntimeError(f"{response.status_code} {response.text[:300]}")
+            return payload
 
     async def _run_tool(self, person: str, today: date, call: dict[str, Any]) -> str:
         function = call.get("function") or {}

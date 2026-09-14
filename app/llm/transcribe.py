@@ -14,7 +14,6 @@ import httpx
 log = logging.getLogger(__name__)
 
 MAX_VOICE_BYTES = 20 * 1024 * 1024
-CHAT_PROMPT = "Распознай речь. Верни только текст на русском, без кавычек и пояснений."
 
 ConvertAudio = Callable[[bytes], Awaitable[bytes | None]]
 PostJson = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -64,12 +63,10 @@ class VoiceTranscriber:
         post: PostJson | None = None,
         convert: ConvertAudio | None = None,
         use_ffmpeg: bool = True,
-        chat_model: str = "",
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.chat_model = chat_model.strip()
         self._post = post
         self._convert = convert
         self._use_ffmpeg = use_ffmpeg
@@ -86,7 +83,7 @@ class VoiceTranscriber:
         errors: list[str] = []
         for kind, data, fmt in await self._attempts(audio, audio_format):
             try:
-                payload = await self._request(kind, data, fmt)
+                payload = await self._request(data, fmt)
             except Exception as exc:
                 errors.append(f"{kind}/{fmt}: {exc}")
                 log.warning("Transcription via %s as %s failed: %s", kind, fmt, exc)
@@ -105,12 +102,6 @@ class VoiceTranscriber:
         fmt = "ogg" if audio_format == "opus" else audio_format
         wav = await self._as_wav(audio)
         attempts: list[tuple[str, bytes, str]] = []
-        if self.chat_model:
-            if wav:
-                attempts.append(("chat", wav, "wav"))
-                attempts.append(("file", wav, "wav"))
-            attempts.append(("chat", audio, fmt))
-            attempts.append(("file", audio, fmt))
         if wav:
             attempts.append(("stt", wav, "wav"))
         attempts.append(("stt", audio, fmt))
@@ -127,18 +118,14 @@ class VoiceTranscriber:
             log.exception("Audio conversion failed")
             return None
 
-    async def _request(self, kind: str, audio: bytes, audio_format: str) -> dict[str, Any]:
+    async def _request(self, audio: bytes, audio_format: str) -> dict[str, Any]:
         encoded = base64.b64encode(audio).decode("ascii")
-        if kind in {"chat", "file"}:
-            url = f"{self.base_url}/chat/completions"
-            body = _chat_body(self.chat_model, kind, encoded, audio_format)
-        else:
-            url = f"{self.base_url}/audio/transcriptions"
-            body = {
-                "model": self.model,
-                "language": "ru",
-                "input_audio": {"data": encoded, "format": audio_format},
-            }
+        url = f"{self.base_url}/audio/transcriptions"
+        body = {
+            "model": self.model,
+            "language": "ru",
+            "input_audio": {"data": encoded, "format": audio_format},
+        }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": "https://github.com/Luckydtsk/bot_schedule",
@@ -152,37 +139,6 @@ class VoiceTranscriber:
             if response.is_error:
                 raise RuntimeError(f"{response.status_code} {response.text[:300]}")
             return cast(dict[str, Any], response.json())
-
-
-AUDIO_MIME = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg"}
-
-
-def _chat_body(model: str, kind: str, encoded: str, audio_format: str) -> dict[str, Any]:
-    mime = AUDIO_MIME.get(audio_format, "application/octet-stream")
-    if kind == "file":
-        audio_part: dict[str, Any] = {
-            "type": "file",
-            "file": {
-                "filename": f"voice.{audio_format}",
-                "file_data": f"data:{mime};base64,{encoded}",
-            },
-        }
-    else:
-        audio_part = {
-            "type": "input_audio",
-            "input_audio": {"data": encoded, "format": audio_format},
-        }
-    return {
-        "model": model,
-        "temperature": 0,
-        "reasoning": {"enabled": False},
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": CHAT_PROMPT}, audio_part],
-            }
-        ],
-    }
 
 
 def _payload_text(payload: dict[str, Any]) -> str:

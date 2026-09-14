@@ -57,7 +57,6 @@ async def run() -> None:
         settings.resolved_llm_key,
         settings.llm_base_url,
         settings.whisper_model,
-        chat_model=settings.llm_model,
     )
     calendars = CalendarService(users, schedules, timezone, settings.calendar_base_url)
 

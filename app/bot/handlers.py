@@ -625,9 +625,17 @@ def build_router(
             text = await transcriber.transcribe(audio)
         except Exception as exc:
             log.exception("Voice transcription failed")
-            detail = escape(str(exc).split("\n")[0][:240])
+            detail = str(exc)
+            if "402" in detail or "credit" in detail.casefold():
+                await message.answer(
+                    "На OpenRouter не хватает баланса для голосовых. "
+                    "Пополни счёт: https://openrouter.ai/settings/credits",
+                    reply_markup=markup,
+                )
+                return
             await message.answer(
-                f"Не получилось распознать голосовое. Напиши текстом.\n<code>{detail}</code>",
+                "Не получилось распознать голосовое. Напиши текстом.\n"
+                f"<code>{escape(detail.split(chr(10))[0][:240])}</code>",
                 reply_markup=markup,
             )
             return
