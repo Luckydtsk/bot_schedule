@@ -43,18 +43,18 @@ async def test_assistant_moves_tutoring_via_tools(tmp_path):
                             "tool_calls": [
                                 {
                                     "id": "2",
-                                        "function": {
-                                            "name": "update_event",
-                                            "arguments": json.dumps(
-                                                {
-                                                    "event_id": sonya.id,
-                                                    "weekday": "воскресенье",
-                                                    "start": "12:00",
-                                                    "end": "13:00",
-                                                    "clear_date": True,
-                                                }
-                                            ),
-                                        },
+                                    "function": {
+                                        "name": "update_event",
+                                        "arguments": json.dumps(
+                                            {
+                                                "event_id": sonya.id,
+                                                "weekday": "воскресенье",
+                                                "start": "12:00",
+                                                "end": "13:00",
+                                                "clear_date": True,
+                                            }
+                                        ),
+                                    },
                                 }
                             ]
                         }
@@ -117,15 +117,16 @@ async def test_transcriber_sends_russian_audio_to_whisper():
     assert text == "Соню перенеси на воскресенье"
     assert calls[0][0].endswith("/audio/transcriptions")
     assert calls[0][1]["language"] == "ru"
-    assert calls[0][1]["input_audio"]["format"] == "ogg"
+    assert calls[0][1]["filename"] == "voice.ogg"
+    assert calls[0][1]["content_type"] == "audio/ogg"
 
 
 async def test_transcriber_converts_telegram_opus_to_wav():
     calls = []
 
     async def post(url, headers, body):
-        calls.append(body["input_audio"]["format"])
-        if body["input_audio"]["format"] != "wav":
+        calls.append(body["filename"])
+        if body["filename"] != "voice.wav":
             raise RuntimeError("ogg opus is not supported")
         return {"text": "Соню перенеси на воскресенье"}
 
@@ -142,7 +143,7 @@ async def test_transcriber_converts_telegram_opus_to_wav():
     )
     text = await transcriber.transcribe(b"ogg-bytes")
     assert text == "Соню перенеси на воскресенье"
-    assert calls == ["wav"]
+    assert calls == ["voice.wav"]
 
 
 async def test_transcriber_without_key_returns_empty():
