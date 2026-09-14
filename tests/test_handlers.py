@@ -297,6 +297,40 @@ async def test_voice_chat_transcribes_and_applies(monkeypatch):
     )
 
 
+async def test_voice_chat_shows_transcription_error(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+
+    class Transcriber:
+        enabled = True
+
+        async def transcribe(self, audio, *, audio_format="ogg"):
+            raise RuntimeError("400 invalid audio")
+
+    async def download(_message):
+        return b"ogg-bytes"
+
+    monkeypatch.setattr(handlers, "download_voice_bytes", download)
+    users = Users(
+        SimpleNamespace(
+            telegram_id=7,
+            group_name="РИС-24-3",
+            notifications_enabled=True,
+            selected_person="denis",
+        )
+    )
+    router = handlers.build_router(
+        users,
+        ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
+        ZoneInfo("Asia/Yekaterinburg"),
+        transcriber=Transcriber(),
+    )
+    message = FakeMessage(voice=SimpleNamespace(file_size=120))
+    await callbacks(router, "message")["voice_chat"](message)
+    text = message.answers[0][0]
+    assert "Не получилось распознать голосовое" in text
+    assert "400 invalid audio" in text
+
+
 async def test_week_menu_shows_current_and_next_week(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
     timezone = ZoneInfo("Asia/Yekaterinburg")

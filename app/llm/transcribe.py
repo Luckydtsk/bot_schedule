@@ -21,33 +21,38 @@ PostJson = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[dict[str, A
 
 
 async def convert_ogg_to_wav(audio: bytes) -> bytes | None:
-    if not audio or shutil.which("ffmpeg") is None:
-        return None
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "voice.ogg"
-        dst = Path(tmp) / "voice.wav"
-        await asyncio.to_thread(src.write_bytes, audio)
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(src),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_s16le",
-            str(dst),
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        if process.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
-            log.warning("ffmpeg failed: %s", stderr.decode("utf-8", errors="replace"))
+    try:
+        if not audio or shutil.which("ffmpeg") is None:
             return None
-        return await asyncio.to_thread(dst.read_bytes)
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "voice.ogg"
+            dst = Path(tmp) / "voice.wav"
+            await asyncio.to_thread(src.write_bytes, audio)
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(src),
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(dst),
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await process.communicate()
+            if process.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+                log.warning("ffmpeg failed: %s", stderr.decode("utf-8", errors="replace"))
+                return None
+            return await asyncio.to_thread(dst.read_bytes)
+    except Exception:
+        log.exception("ffmpeg conversion failed")
+        return None
 
 
 class VoiceTranscriber:
@@ -100,42 +105,33 @@ class VoiceTranscriber:
         fmt = "ogg" if audio_format == "opus" else audio_format
         wav = await self._as_wav(audio)
         attempts: list[tuple[str, bytes, str]] = []
+        if self.chat_model:
+            if wav:
+                attempts.append(("chat", wav, "wav"))
+                attempts.append(("file", wav, "wav"))
+            attempts.append(("chat", audio, fmt))
+            attempts.append(("file", audio, fmt))
         if wav:
             attempts.append(("stt", wav, "wav"))
-            if self.chat_model:
-                attempts.append(("chat", wav, "wav"))
         attempts.append(("stt", audio, fmt))
-        if self.chat_model:
-            attempts.append(("chat", audio, fmt))
         return attempts
 
     async def _as_wav(self, audio: bytes) -> bytes | None:
-        if self._convert is not None:
-            return await self._convert(audio)
-        if not self._use_ffmpeg:
+        try:
+            if self._convert is not None:
+                return await self._convert(audio)
+            if not self._use_ffmpeg:
+                return None
+            return await convert_ogg_to_wav(audio)
+        except Exception:
+            log.exception("Audio conversion failed")
             return None
-        return await convert_ogg_to_wav(audio)
 
     async def _request(self, kind: str, audio: bytes, audio_format: str) -> dict[str, Any]:
         encoded = base64.b64encode(audio).decode("ascii")
-        if kind == "chat":
+        if kind in {"chat", "file"}:
             url = f"{self.base_url}/chat/completions"
-            body: dict[str, Any] = {
-                "model": self.chat_model,
-                "temperature": 0,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": CHAT_PROMPT},
-                            {
-                                "type": "input_audio",
-                                "input_audio": {"data": encoded, "format": audio_format},
-                            },
-                        ],
-                    }
-                ],
-            }
+            body = _chat_body(self.chat_model, kind, encoded, audio_format)
         else:
             url = f"{self.base_url}/audio/transcriptions"
             body = {
@@ -156,6 +152,37 @@ class VoiceTranscriber:
             if response.is_error:
                 raise RuntimeError(f"{response.status_code} {response.text[:300]}")
             return cast(dict[str, Any], response.json())
+
+
+AUDIO_MIME = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg"}
+
+
+def _chat_body(model: str, kind: str, encoded: str, audio_format: str) -> dict[str, Any]:
+    mime = AUDIO_MIME.get(audio_format, "application/octet-stream")
+    if kind == "file":
+        audio_part: dict[str, Any] = {
+            "type": "file",
+            "file": {
+                "filename": f"voice.{audio_format}",
+                "file_data": f"data:{mime};base64,{encoded}",
+            },
+        }
+    else:
+        audio_part = {
+            "type": "input_audio",
+            "input_audio": {"data": encoded, "format": audio_format},
+        }
+    return {
+        "model": model,
+        "temperature": 0,
+        "reasoning": {"enabled": False},
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": CHAT_PROMPT}, audio_part],
+            }
+        ],
+    }
 
 
 def _payload_text(payload: dict[str, Any]) -> str:

@@ -623,10 +623,11 @@ def build_router(
             return
         try:
             text = await transcriber.transcribe(audio)
-        except Exception:
+        except Exception as exc:
             log.exception("Voice transcription failed")
+            detail = escape(str(exc).split("\n")[0][:240])
             await message.answer(
-                "Не получилось распознать голосовое. Напиши текстом.",
+                f"Не получилось распознать голосовое. Напиши текстом.\n<code>{detail}</code>",
                 reply_markup=markup,
             )
             return

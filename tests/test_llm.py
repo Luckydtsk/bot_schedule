@@ -231,14 +231,13 @@ async def test_transcriber_converts_telegram_opus_to_wav():
     assert calls == ["wav"]
 
 
-async def test_transcriber_falls_back_to_gemini_chat():
+async def test_transcriber_uses_gemini_chat_before_whisper():
     calls = []
 
     async def post(url, headers, body):
-        calls.append((url, body["model"]))
+        calls.append((url, body["messages"][0]["content"][1]["type"]))
         if url.endswith("/audio/transcriptions"):
-            raise RuntimeError("whisper is unavailable")
-        assert body["messages"][0]["content"][1]["type"] == "input_audio"
+            raise RuntimeError("whisper should not run first")
         return {"choices": [{"message": {"content": "Соню перенеси на воскресенье"}}]}
 
     transcriber = VoiceTranscriber(
@@ -251,11 +250,26 @@ async def test_transcriber_falls_back_to_gemini_chat():
     )
     text = await transcriber.transcribe(b"ogg-bytes")
     assert text == "Соню перенеси на воскресенье"
-    assert calls[0][0].endswith("/audio/transcriptions")
-    assert calls[1] == (
-        "https://openrouter.ai/api/v1/chat/completions",
-        "google/gemini-2.5-flash",
+    assert calls == [("https://openrouter.ai/api/v1/chat/completions", "input_audio")]
+
+
+async def test_transcriber_keeps_going_if_ffmpeg_raises():
+    async def convert(_audio: bytes) -> bytes | None:
+        raise RuntimeError("ffmpeg crashed")
+
+    async def post(url, headers, body):
+        assert url.endswith("/audio/transcriptions")
+        assert body["input_audio"]["format"] == "ogg"
+        return {"text": "Соню перенеси на воскресенье"}
+
+    transcriber = VoiceTranscriber(
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "openai/whisper-large-v3",
+        post=post,
+        convert=convert,
     )
+    assert await transcriber.transcribe(b"ogg-bytes") == "Соню перенеси на воскресенье"
 
 
 async def test_transcriber_without_key_returns_empty():
