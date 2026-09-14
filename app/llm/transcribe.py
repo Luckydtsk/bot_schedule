@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import shutil
 import tempfile
@@ -13,14 +14,10 @@ import httpx
 log = logging.getLogger(__name__)
 
 MAX_VOICE_BYTES = 20 * 1024 * 1024
-AUDIO_TYPES = {
-    "wav": "audio/wav",
-    "mp3": "audio/mpeg",
-    "ogg": "audio/ogg",
-}
+CHAT_PROMPT = "Распознай речь. Верни только текст на русском, без кавычек и пояснений."
 
 ConvertAudio = Callable[[bytes], Awaitable[bytes | None]]
-PostMultipart = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[dict[str, Any]]]
+PostJson = Callable[[str, dict[str, str], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 async def convert_ogg_to_wav(audio: bytes) -> bytes | None:
@@ -59,13 +56,15 @@ class VoiceTranscriber:
         api_key: str,
         base_url: str,
         model: str,
-        post: PostMultipart | None = None,
+        post: PostJson | None = None,
         convert: ConvertAudio | None = None,
         use_ffmpeg: bool = True,
+        chat_model: str = "",
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.chat_model = chat_model.strip()
         self._post = post
         self._convert = convert
         self._use_ffmpeg = use_ffmpeg
@@ -80,30 +79,34 @@ class VoiceTranscriber:
         if not audio or len(audio) > MAX_VOICE_BYTES:
             return ""
         errors: list[str] = []
-        for data, filename in await self._attempts(audio, audio_format):
+        for kind, data, fmt in await self._attempts(audio, audio_format):
             try:
-                payload = await self._request(data, filename)
+                payload = await self._request(kind, data, fmt)
             except Exception as exc:
-                errors.append(f"{filename}: {exc}")
-                log.warning("Transcription as %s failed: %s", filename, exc)
+                errors.append(f"{kind}/{fmt}: {exc}")
+                log.warning("Transcription via %s as %s failed: %s", kind, fmt, exc)
                 continue
-            text = str(payload.get("text") or "").strip()
+            text = _payload_text(payload)
             if text:
                 return text
             error = payload.get("error")
             if error:
-                errors.append(f"{filename}: {error}")
+                errors.append(f"{kind}/{fmt}: {error}")
         if errors:
             raise RuntimeError("; ".join(errors))
         return ""
 
-    async def _attempts(self, audio: bytes, audio_format: str) -> list[tuple[bytes, str]]:
+    async def _attempts(self, audio: bytes, audio_format: str) -> list[tuple[str, bytes, str]]:
+        fmt = "ogg" if audio_format == "opus" else audio_format
         wav = await self._as_wav(audio)
-        attempts: list[tuple[bytes, str]] = []
+        attempts: list[tuple[str, bytes, str]] = []
         if wav:
-            attempts.append((wav, "voice.wav"))
-        suffix = "ogg" if audio_format == "opus" else audio_format
-        attempts.append((audio, f"voice.{suffix}"))
+            attempts.append(("stt", wav, "wav"))
+            if self.chat_model:
+                attempts.append(("chat", wav, "wav"))
+        attempts.append(("stt", audio, fmt))
+        if self.chat_model:
+            attempts.append(("chat", audio, fmt))
         return attempts
 
     async def _as_wav(self, audio: bytes) -> bytes | None:
@@ -113,28 +116,60 @@ class VoiceTranscriber:
             return None
         return await convert_ogg_to_wav(audio)
 
-    async def _request(self, audio: bytes, filename: str) -> dict[str, Any]:
-        suffix = filename.rsplit(".", 1)[-1].lower()
-        content_type = AUDIO_TYPES.get(suffix, "application/octet-stream")
-        fields = {"model": self.model, "language": "ru"}
+    async def _request(self, kind: str, audio: bytes, audio_format: str) -> dict[str, Any]:
+        encoded = base64.b64encode(audio).decode("ascii")
+        if kind == "chat":
+            url = f"{self.base_url}/chat/completions"
+            body: dict[str, Any] = {
+                "model": self.chat_model,
+                "temperature": 0,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": CHAT_PROMPT},
+                            {
+                                "type": "input_audio",
+                                "input_audio": {"data": encoded, "format": audio_format},
+                            },
+                        ],
+                    }
+                ],
+            }
+        else:
+            url = f"{self.base_url}/audio/transcriptions"
+            body = {
+                "model": self.model,
+                "language": "ru",
+                "input_audio": {"data": encoded, "format": audio_format},
+            }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": "https://github.com/Luckydtsk/bot_schedule",
             "X-Title": "bot_schedule",
         }
         if self._post is not None:
-            return await self._post(
-                f"{self.base_url}/audio/transcriptions",
-                headers,
-                {**fields, "filename": filename, "content_type": content_type},
-            )
+            return await self._post(url, headers, body)
+        headers["Content-Type"] = "application/json"
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{self.base_url}/audio/transcriptions",
-                headers=headers,
-                data=fields,
-                files={"file": (filename, audio, content_type)},
-            )
+            response = await client.post(url, headers=headers, json=body)
             if response.is_error:
                 raise RuntimeError(f"{response.status_code} {response.text[:300]}")
             return cast(dict[str, Any], response.json())
+
+
+def _payload_text(payload: dict[str, Any]) -> str:
+    text = str(payload.get("text") or "").strip()
+    if text:
+        return text
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    content = (choices[0].get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict)
+        ).strip()
+    return ""

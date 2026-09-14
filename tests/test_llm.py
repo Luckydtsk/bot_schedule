@@ -203,16 +203,15 @@ async def test_transcriber_sends_russian_audio_to_whisper():
     assert text == "Соню перенеси на воскресенье"
     assert calls[0][0].endswith("/audio/transcriptions")
     assert calls[0][1]["language"] == "ru"
-    assert calls[0][1]["filename"] == "voice.ogg"
-    assert calls[0][1]["content_type"] == "audio/ogg"
+    assert calls[0][1]["input_audio"]["format"] == "ogg"
 
 
 async def test_transcriber_converts_telegram_opus_to_wav():
     calls = []
 
     async def post(url, headers, body):
-        calls.append(body["filename"])
-        if body["filename"] != "voice.wav":
+        calls.append(body["input_audio"]["format"])
+        if body["input_audio"]["format"] != "wav":
             raise RuntimeError("ogg opus is not supported")
         return {"text": "Соню перенеси на воскресенье"}
 
@@ -229,7 +228,34 @@ async def test_transcriber_converts_telegram_opus_to_wav():
     )
     text = await transcriber.transcribe(b"ogg-bytes")
     assert text == "Соню перенеси на воскресенье"
-    assert calls == ["voice.wav"]
+    assert calls == ["wav"]
+
+
+async def test_transcriber_falls_back_to_gemini_chat():
+    calls = []
+
+    async def post(url, headers, body):
+        calls.append((url, body["model"]))
+        if url.endswith("/audio/transcriptions"):
+            raise RuntimeError("whisper is unavailable")
+        assert body["messages"][0]["content"][1]["type"] == "input_audio"
+        return {"choices": [{"message": {"content": "Соню перенеси на воскресенье"}}]}
+
+    transcriber = VoiceTranscriber(
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "openai/whisper-large-v3",
+        post=post,
+        use_ffmpeg=False,
+        chat_model="google/gemini-2.5-flash",
+    )
+    text = await transcriber.transcribe(b"ogg-bytes")
+    assert text == "Соню перенеси на воскресенье"
+    assert calls[0][0].endswith("/audio/transcriptions")
+    assert calls[1] == (
+        "https://openrouter.ai/api/v1/chat/completions",
+        "google/gemini-2.5-flash",
+    )
 
 
 async def test_transcriber_without_key_returns_empty():
