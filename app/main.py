@@ -51,6 +51,7 @@ async def run() -> None:
         settings.resolved_llm_key,
         settings.llm_base_url,
         settings.llm_model,
+        schedules=schedules,
     )
     transcriber = VoiceTranscriber(
         settings.resolved_llm_key,

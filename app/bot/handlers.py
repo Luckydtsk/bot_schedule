@@ -580,7 +580,8 @@ def build_router(
         markup = main_keyboard(person)
         if assistant is None:
             await message.answer(
-                "Напиши, что изменить в расписании, когда нейронка будет подключена.",
+                "Можно спросить про пары или написать, что изменить, "
+                "когда нейронка будет подключена.",
                 reply_markup=markup,
             )
             return

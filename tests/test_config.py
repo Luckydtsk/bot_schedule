@@ -37,3 +37,7 @@ def test_openrouter_key_is_used_when_llm_key_is_empty():
 
 def test_whisper_model_defaults_to_openrouter_large_v3():
     assert settings().whisper_model == "openai/whisper-large-v3"
+
+
+def test_llm_model_defaults_to_gemini_flash():
+    assert settings().llm_model == "google/gemini-2.5-flash"

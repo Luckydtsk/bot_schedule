@@ -1,11 +1,13 @@
 import json
-from datetime import time
+from datetime import date, time
 from zoneinfo import ZoneInfo
 
 from app.llm.agent import ScheduleAssistant
 from app.llm.transcribe import VoiceTranscriber
-from app.people import DENIS
+from app.people import DENIS, DENIS_GROUP
 from app.schedule.event_repository import EventRepository
+from app.schedule.models import Lesson, Schedule
+from app.schedule.service import ScheduleService
 from app.storage.database import Database
 
 
@@ -76,7 +78,7 @@ async def test_assistant_moves_tutoring_via_tools(tmp_path):
         ZoneInfo("Asia/Yekaterinburg"),
         "test-key",
         "https://openrouter.ai/api/v1",
-        "qwen/qwen3-32b",
+        "google/gemini-2.5-flash",
         post=post,
     )
     reply = await assistant.reply(DENIS, "Соню с пятницы перенеси на воскресенье в 12")
@@ -87,13 +89,97 @@ async def test_assistant_moves_tutoring_via_tools(tmp_path):
     await db.close()
 
 
+async def test_assistant_answers_university_schedule_questions(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'llm-schedule.db'}")
+    await db.create_schema()
+    repo = EventRepository(db.sessions)
+    await repo.seed_if_empty()
+    day = date(2026, 9, 14)
+    schedules = ScheduleService(
+        Schedule(
+            {3: (DENIS_GROUP,)},
+            (
+                Lesson(
+                    DENIS_GROUP,
+                    day,
+                    1,
+                    time(8, 0),
+                    time(9, 30),
+                    "Математика",
+                    "Иванов",
+                    "301",
+                ),
+            ),
+        )
+    )
+    calls = []
+
+    async def post(url, headers, body):
+        calls.append(body)
+        if len(calls) == 1:
+            names = [item["function"]["name"] for item in body["tools"]]
+            assert "get_schedule" in names
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "1",
+                                    "function": {
+                                        "name": "get_schedule",
+                                        "arguments": json.dumps(
+                                            {"scope": "day", "date": "2026-09-14"}
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        tool = body["messages"][-1]
+        assert tool["role"] == "tool"
+        assert "Математика" in tool["content"]
+        assert "301" in tool["content"]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "В понедельник первая пара — математика в 08:00, ауд. 301."
+                    }
+                }
+            ]
+        }
+
+    assistant = ScheduleAssistant(
+        repo,
+        ZoneInfo("Asia/Yekaterinburg"),
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "google/gemini-2.5-flash",
+        post=post,
+        schedules=schedules,
+    )
+    reply = await assistant.reply(DENIS, "Что у меня в понедельник?")
+    assert "математика" in reply.casefold()
+    used = [
+        (call.get("function") or {}).get("name")
+        for body in calls
+        for message in body.get("messages", [])
+        for call in (message.get("tool_calls") or [])
+    ]
+    assert set(used) == {"get_schedule"}
+    await db.close()
+
+
 async def test_assistant_without_key_explains_setup():
     assistant = ScheduleAssistant(
         EventRepository.__new__(EventRepository),
         ZoneInfo("Asia/Yekaterinburg"),
         "",
         "https://openrouter.ai/api/v1",
-        "qwen/qwen3-32b",
+        "google/gemini-2.5-flash",
     )
     text = await assistant.reply(DENIS, "перенеси Соню")
     assert "не подключена" in text

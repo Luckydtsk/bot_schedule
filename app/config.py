@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     openrouter_api_key: str = ""
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = "qwen/qwen3-32b"
+    llm_model: str = "google/gemini-2.5-flash"
     whisper_model: str = "openai/whisper-large-v3"
 
     @property
