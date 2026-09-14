@@ -39,5 +39,5 @@ def test_whisper_model_defaults_to_openrouter_large_v3():
     assert settings().whisper_model == "openai/whisper-large-v3"
 
 
-def test_llm_model_defaults_to_free_gemma():
-    assert settings().llm_model == "google/gemma-4-31b-it:free"
+def test_llm_model_defaults_to_qwen():
+    assert settings().llm_model == "qwen/qwen3-32b"
