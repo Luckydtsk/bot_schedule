@@ -486,8 +486,12 @@ async def test_delete_lesson_without_neural_net(tmp_path, monkeypatch):
     first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
     confirm = FakeCallback(first_lesson)
     await wizard(confirm)
-    assert "удалено с" in confirm.message.edits[-1][0]
-    assert "id=" not in confirm.message.edits[-1][0]
+    labels = [row[0].text for row in confirm.message.edits[-1][1].inline_keyboard]
+    assert labels == ["На эту неделю", "На следующую", "Навсегда", "Отмена"]
+    forever = FakeCallback(_button_data(confirm.message.edits[-1][1], "Навсегда"))
+    await callbacks(router, "callback_query")["edit_scope"](forever)
+    assert "удалено с" in forever.message.edits[-1][0]
+    assert "id=" not in forever.message.edits[-1][0]
     after = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
     assert len(after) == len(before) - 1
     await db.close()

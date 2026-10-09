@@ -685,6 +685,7 @@ def build_router(
         data = callback.data or ""
         if data == "wiz:cancel":
             reset_wizard(user_id)
+            pending_edits.pop(user_id, None)
             await callback.message.edit_text("Отменил.")
             await callback.answer()
             return
@@ -728,10 +729,26 @@ def build_router(
                 return
             wizard.event_id = event_id
             if wizard.action == DELETE:
-                today = datetime.now(timezone).date()
-                reply = await delete_personal_lesson(events, today, current, scope=SCOPE_ALL_WEEKS)
+                token = secrets.token_hex(4)
+                pending_edits[user_id] = (
+                    wizard.person,
+                    "",
+                    token,
+                    {"name": "delete_event", "args": {"event_id": current.id}},
+                )
                 reset_wizard(user_id)
-                await callback.message.edit_text(reply)
+                await callback.message.edit_text(
+                    f"Убрать {format_event_choice(current)}?\n\n"
+                    "На эту неделю, на следующую или навсегда?",
+                    reply_markup=inline(
+                        [
+                            ("На эту неделю", f"edit:scope:this:{token}"),
+                            ("На следующую", f"edit:scope:next:{token}"),
+                            ("Навсегда", f"edit:scope:forever:{token}"),
+                            ("Отмена", "wiz:cancel"),
+                        ]
+                    ),
+                )
                 await callback.answer()
                 return
             wizard.step = "weekday"
