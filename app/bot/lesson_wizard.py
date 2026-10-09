@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.schedule.events import WEEKDAYS, PersonalEvent
+from app.schedule.events import PersonalEvent
 from app.schedule.students import format_event_choice
 
 ADD = "add"
@@ -80,14 +80,6 @@ def lesson_keyboard(events: tuple[PersonalEvent, ...]) -> InlineKeyboardMarkup:
 
 def lessons_list_text(student: str, events: tuple[PersonalEvent, ...]) -> str:
     lines = [f"Занятия с {student}:"]
-    for event in events:
-        day = (
-            WEEKDAYS[event.weekday]
-            if event.weekday is not None
-            else event.on_date.isoformat()
-            if event.on_date is not None
-            else "без дня"
-        )
-        lines.append(f"• {day} {event.start_time:%H:%M}–{event.end_time:%H:%M}")
+    lines.extend(f"• {format_event_choice(event)}" for event in events)
     lines.append("\nКакое занятие выбрать?")
     return "\n".join(lines)

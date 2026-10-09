@@ -78,6 +78,7 @@ from app.schedule.students import (
     events_for_student,
     format_event_choice,
     lesson_title,
+    ordered_student_events,
     students_from_events,
 )
 from app.users.models import User
@@ -213,7 +214,9 @@ def build_router(
         target: Message, wizard: LessonWizard, telegram_id: int, *, edit: bool
     ) -> None:
         assert events is not None and wizard.student is not None
-        items = events_for_student(await events.list_for(wizard.person), wizard.student)
+        items = ordered_student_events(
+            events_for_student(await events.list_for(wizard.person), wizard.student)
+        )
         if not items:
             text = f"Занятий с {wizard.student} пока нет. Сначала добавь занятие."
             reset_wizard(telegram_id)
@@ -725,11 +728,11 @@ def build_router(
                 await callback.message.edit_text(reply)
                 await callback.answer()
                 return
-            wizard.step = "time"
+            wizard.step = "weekday"
             await callback.message.edit_text(
                 f"Меняем {format_event_choice(current)} с {wizard.student}.\n\n"
-                "Напиши новое время и длительность, например: в 12 на час. "
-                "Можно сразу указать другой день."
+                "На какой день поставить?",
+                reply_markup=weekday_keyboard(),
             )
             await callback.answer()
             return

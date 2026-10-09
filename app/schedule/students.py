@@ -64,11 +64,20 @@ def students_from_events(events: tuple[PersonalEvent, ...]) -> tuple[str, ...]:
     return tuple(sorted(names, key=str.casefold))
 
 
+def ordered_student_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalEvent, ...]:
+    def key(event: PersonalEvent) -> tuple[int, int, object]:
+        if event.on_date is not None:
+            return (1, event.on_date.toordinal(), event.start_time)
+        return (0, event.weekday if event.weekday is not None else 7, event.start_time)
+
+    return tuple(sorted(events, key=key))
+
+
 def format_event_choice(event: PersonalEvent) -> str:
+    clock = f"{event.start_time:%H:%M}–{event.end_time:%H:%M}"
     if event.on_date is not None:
-        when = event.on_date.strftime("%d.%m")
-    elif event.weekday is not None:
-        when = WEEKDAYS[event.weekday]
-    else:
-        when = "без дня"
-    return f"{when} {event.start_time:%H:%M}–{event.end_time:%H:%M}"
+        day = WEEKDAYS[event.on_date.weekday()]
+        return f"({event.on_date.day}) {day} {clock}"
+    if event.weekday is not None:
+        return f"{WEEKDAYS[event.weekday]} {clock}"
+    return f"без дня {clock}"
