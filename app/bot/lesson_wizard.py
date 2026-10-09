@@ -36,6 +36,7 @@ class LessonWizard:
     student: str | None = None
     weekday: int | None = None
     event_id: int | None = None
+    scope: str | None = None
     students: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -47,6 +48,17 @@ def student_keyboard(names: tuple[str, ...]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text=ADD_STUDENT_BUTTON, callback_data="wiz:new")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="wiz:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def week_scope_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="На эту неделю", callback_data="wiz:scope:this")],
+            [InlineKeyboardButton(text="На следующую", callback_data="wiz:scope:next")],
+            [InlineKeyboardButton(text="Навсегда", callback_data="wiz:scope:forever")],
+            [InlineKeyboardButton(text="Отмена", callback_data="wiz:cancel")],
+        ]
+    )
 
 
 def weekday_keyboard() -> InlineKeyboardMarkup:
