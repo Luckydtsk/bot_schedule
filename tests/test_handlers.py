@@ -222,8 +222,8 @@ async def test_free_chat_uses_selected_profile(monkeypatch):
         def __init__(self):
             self.calls = []
 
-        async def reply(self, person, text):
-            self.calls.append((person, text))
+        async def reply(self, person, text, confirmed_scope=None):
+            self.calls.append((person, text, confirmed_scope))
             return f"ok:{person}:{text}"
 
     users = Users(
@@ -243,8 +243,52 @@ async def test_free_chat_uses_selected_profile(monkeypatch):
     )
     message = FakeMessage("Соню перенеси на воскресенье")
     await callbacks(router, "message")["free_chat"](message)
-    assert assistant.calls == [("sasha", "Соню перенеси на воскресенье")]
+    assert assistant.calls == [("sasha", "Соню перенеси на воскресенье", None)]
     assert message.answers[0][0] == "ok:sasha:Соню перенеси на воскресенье"
+
+
+async def test_free_chat_asks_week_scope_then_applies(monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+
+    class Assistant:
+        def __init__(self):
+            self.calls = []
+
+        async def reply(self, person, text, confirmed_scope=None):
+            self.calls.append((person, text, confirmed_scope))
+            if confirmed_scope is None:
+                return (
+                    '<<ASK_SCOPE>>{"name": "update_event", "args": {"event_id": 1}}\n'
+                    "Изменить только на эту неделю или на обе недели?\n\n"
+                    "Планирую перенести Соню."
+                )
+            return f"сделано:{confirmed_scope}"
+
+        async def apply_pending(self, person, pending, confirmed_scope):
+            self.calls.append((person, pending, confirmed_scope))
+            return f"сделано:{confirmed_scope}"
+
+    assistant = Assistant()
+    router = handlers.build_router(
+        Users(),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        assistant=assistant,
+    )
+    message = FakeMessage("Соню перенеси на воскресенье")
+    await callbacks(router, "message")["free_chat"](message)
+    text, markup = message.answers[0]
+    assert "эту неделю" in text
+    this_week = markup.inline_keyboard[0][0].callback_data
+    assert this_week.startswith("edit:scope:this:")
+    selected = FakeCallback(this_week)
+    await callbacks(router, "callback_query")["edit_scope"](selected)
+    assert assistant.calls[-1] == (
+        "denis",
+        {"name": "update_event", "args": {"event_id": 1}},
+        "this_week",
+    )
+    assert selected.message.edits[-1][0] == "сделано:this_week"
 
 
 async def test_week_menu_shows_current_and_next_week(monkeypatch):

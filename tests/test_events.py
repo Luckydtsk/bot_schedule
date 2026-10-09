@@ -2,7 +2,7 @@ from datetime import date, time
 
 from app.people import DENIS, SASHA
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import default_seed_rows
+from app.schedule.events import default_seed_rows, event_applies
 from app.storage.database import Database
 
 
@@ -34,6 +34,21 @@ async def test_seed_add_update_and_delete(tmp_path):
     assert moved and moved.weekday == 6 and moved.on_date is None
     assert await repo.delete(created.id)
     assert await repo.get(created.id) is None
+    await db.close()
+
+
+async def test_skip_dates_hide_recurring_event_on_that_day(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'skip.db'}")
+    await db.create_schema()
+    repo = EventRepository(db.sessions)
+    await repo.seed_if_empty()
+    items = await repo.list_for(DENIS)
+    sonya = next(item for item in items if "Соней" in item.subject and item.weekday == 4)
+    friday = date(2026, 9, 18)
+    assert event_applies(sonya, friday)
+    skipped = await repo.update(sonya.id, skip_dates=friday.isoformat())
+    assert skipped and not event_applies(skipped, friday)
+    assert event_applies(skipped, date(2026, 9, 25))
     await db.close()
 
 

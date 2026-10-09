@@ -10,6 +10,26 @@ from app.schedule.sasha import is_odd_week
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
 
+def parse_skip_dates(raw: str | None) -> tuple[date, ...]:
+    if not raw or not raw.strip():
+        return ()
+    days: list[date] = []
+    for part in raw.split(","):
+        text = part.strip()
+        if text:
+            days.append(date.fromisoformat(text))
+    return tuple(days)
+
+
+def format_skip_dates(days: set[date] | tuple[date, ...]) -> str:
+    return ",".join(sorted(day.isoformat() for day in days))
+
+
+def date_on_current_week(weekday: int, today: date) -> date:
+    monday = today - timedelta(days=today.weekday())
+    return monday + timedelta(days=weekday)
+
+
 @dataclass(frozen=True, slots=True)
 class PersonalEvent:
     id: int
@@ -24,6 +44,7 @@ class PersonalEvent:
     location: str | None
     lesson_type: str | None
     parity: str = "always"
+    skip_dates: str = ""
 
 
 def group_for(person: str) -> str:
@@ -31,6 +52,8 @@ def group_for(person: str) -> str:
 
 
 def event_applies(event: PersonalEvent, day: date) -> bool:
+    if day in parse_skip_dates(event.skip_dates):
+        return False
     if event.on_date is not None:
         return event.on_date == day
     if event.weekday is None or event.weekday != day.weekday():

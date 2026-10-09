@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import time
 from datetime import date, datetime, timedelta
 from html import escape
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -28,7 +30,13 @@ from aiogram.types import (
 
 from app.bot.formatters import format_day, format_schedule
 from app.calendar.service import CalendarService
-from app.llm.agent import ScheduleAssistant
+from app.llm.agent import (
+    ASK_SCOPE_PREFIX,
+    SCOPE_ALL_WEEKS,
+    SCOPE_THIS_WEEK,
+    ScheduleAssistant,
+    parse_scope_prompt,
+)
 from app.people import (
     DENIS,
     DENIS_COURSE,
@@ -91,6 +99,7 @@ def build_router(
 ) -> Router:
     router = Router()
     pending_broadcasts: dict[int, str] = {}
+    pending_edits: dict[int, tuple[str, str, str, dict[str, Any]]] = {}
     last_manual_updates: dict[int, float] = {}
 
     def active_group(user: User) -> str:
@@ -554,6 +563,39 @@ def build_router(
         await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
 
+    @router.callback_query(F.data.startswith("edit:scope:"))
+    async def edit_scope(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        parts = (callback.data or "").split(":")
+        if callback.from_user is None or len(parts) != 4:
+            await callback.answer()
+            return
+        _, _, choice, token = parts
+        pending = pending_edits.get(callback.from_user.id)
+        if pending is None or pending[2] != token:
+            await callback.answer("Запрос уже неактуален. Напиши изменение ещё раз.")
+            return
+        pending_edits.pop(callback.from_user.id, None)
+        person, original, _, mutation = pending
+        confirmed_scope = SCOPE_THIS_WEEK if choice == "this" else SCOPE_ALL_WEEKS
+        if assistant is None:
+            await callback.message.edit_text("Нейронка не подключена.")
+            await callback.answer()
+            return
+        bot = getattr(callback, "bot", None)
+        chat = getattr(callback.message, "chat", None)
+        if bot is not None and chat is not None:
+            with contextlib.suppress(TelegramAPIError):
+                await bot.send_chat_action(chat.id, "typing")
+        if mutation.get("name"):
+            reply = await assistant.apply_pending(person, mutation, confirmed_scope)
+        else:
+            reply = await assistant.reply(person, original, confirmed_scope=confirmed_scope)
+        if reply.startswith(ASK_SCOPE_PREFIX):
+            reply = parse_scope_prompt(reply)[1]
+        await callback.message.edit_text(reply)
+        await callback.answer()
+
     @router.message(F.text)
     async def free_chat(message: Message) -> None:
         text = (message.text or "").strip()
@@ -574,6 +616,20 @@ def build_router(
             with contextlib.suppress(TelegramAPIError):
                 await bot.send_chat_action(chat.id, "typing")
         reply = await assistant.reply(person, text)
+        if reply.startswith(ASK_SCOPE_PREFIX):
+            mutation, summary = parse_scope_prompt(reply)
+            token = secrets.token_hex(4)
+            pending_edits[message.from_user.id] = (person, text, token, mutation)
+            await message.answer(
+                summary,
+                reply_markup=inline(
+                    [
+                        ("Только эту неделю", f"edit:scope:this:{token}"),
+                        ("На обе недели", f"edit:scope:both:{token}"),
+                    ]
+                ),
+            )
+            return
         await message.answer(reply, reply_markup=markup)
 
     return router

@@ -82,6 +82,7 @@ class PersonalEventRow(Base):
     lesson_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parity: Mapped[str] = mapped_column(String(16), default="always")
     seed_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    skip_dates: Mapped[str] = mapped_column(String(512), default="")
 
 
 class UserHiddenSubjectRow(Base):
@@ -103,6 +104,17 @@ def _ensure_user_columns(connection: Connection) -> None:
         )
 
 
+def _ensure_event_columns(connection: Connection) -> None:
+    inspector = inspect(connection)
+    if "personal_events" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("personal_events")}
+    if "skip_dates" not in columns:
+        connection.execute(
+            text("ALTER TABLE personal_events ADD COLUMN skip_dates VARCHAR(512) DEFAULT ''")
+        )
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine: AsyncEngine = create_async_engine(url)
@@ -114,6 +126,7 @@ class Database:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.run_sync(_ensure_user_columns)
+            await connection.run_sync(_ensure_event_columns)
 
     async def close(self) -> None:
         await self.engine.dispose()

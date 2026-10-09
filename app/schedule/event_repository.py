@@ -30,6 +30,7 @@ def _model(row: PersonalEventRow) -> PersonalEvent:
         row.location,
         row.lesson_type,
         row.parity,
+        row.skip_dates or "",
     )
 
 
@@ -76,6 +77,7 @@ class EventRepository:
         lesson_type: str | None = None,
         pair_number: int = 0,
         parity: str = "always",
+        skip_dates: str = "",
     ) -> PersonalEvent:
         async with self.sessions() as session:
             row = PersonalEventRow(
@@ -90,6 +92,7 @@ class EventRepository:
                 location=location,
                 lesson_type=lesson_type,
                 parity=parity,
+                skip_dates=skip_dates,
             )
             session.add(row)
             await session.commit()
