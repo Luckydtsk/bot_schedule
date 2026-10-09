@@ -507,6 +507,7 @@ async def test_change_lesson_asks_week_scope(tmp_path, monkeypatch):
     assert "На какой день" in chosen.message.edits[-1][0]
     day = FakeCallback(_button_data(chosen.message.edits[-1][1], "Пт"))
     await wizard(day)
+    assert day.message.edits[-1][1].inline_keyboard[-1][0].text == "Отмена"
     time_message = FakeMessage("в двенадцать на час")
     await callbacks(router, "message")["free_chat"](time_message)
     assert "навсегда" in time_message.answers[0][0]
@@ -534,6 +535,7 @@ async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
     await wizard(chosen)
     day = FakeCallback(_button_data(chosen.message.edits[-1][1], "Пт"))
     await wizard(day)
+    assert day.message.edits[-1][1].inline_keyboard[-1][0].text == "Отмена"
     time_message = FakeMessage("в двенадцать на час")
     await callbacks(router, "message")["free_chat"](time_message)
     next_week = _button_data(time_message.answers[0][1], "На следующую")

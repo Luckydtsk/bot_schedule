@@ -712,7 +712,8 @@ def build_router(
             day = WEEKDAYS[wizard.weekday]
             await callback.message.edit_text(
                 f"Занятие с {wizard.student}, {day}.\n\n"
-                "Напиши время начала и длительность, например: в 10:40 на полтора часа."
+                "Напиши время начала и длительность, например: в 10:40 на полтора часа.",
+                reply_markup=inline([("Отмена", "wiz:cancel")]),
             )
             await callback.answer()
             return
