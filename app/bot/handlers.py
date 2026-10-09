@@ -29,14 +29,24 @@ from aiogram.types import (
 )
 
 from app.bot.formatters import format_day, format_schedule
-from app.calendar.service import CalendarService
-from app.llm.agent import (
-    ASK_SCOPE_PREFIX,
-    SCOPE_ALL_WEEKS,
-    SCOPE_THIS_WEEK,
-    ScheduleAssistant,
-    parse_scope_prompt,
+from app.bot.lesson_wizard import (
+    ACTION_BUTTONS,
+    ACTION_BY_TEXT,
+    ACTION_PROMPT,
+    ADD,
+    ADD_BUTTON,
+    CHANGE_BUTTON,
+    DELETE,
+    DELETE_BUTTON,
+    LessonWizard,
+    lesson_keyboard,
+    lessons_list_text,
+    student_keyboard,
+    weekday_keyboard,
 )
+from app.calendar.service import CalendarService
+from app.llm.agent import ASK_SCOPE_PREFIX, ScheduleAssistant, parse_scope_prompt
+from app.llm.time_slot import WEEKDAY_ALIASES, TimeSlot, parse_time_slot_text
 from app.people import (
     DENIS,
     DENIS_COURSE,
@@ -52,8 +62,24 @@ from app.people import (
 from app.schedule import sasha as sasha_schedule
 from app.schedule import tutoring
 from app.schedule.event_repository import EventRepository
+from app.schedule.events import WEEKDAYS, describe_event
 from app.schedule.models import Lesson
+from app.schedule.mutations import (
+    SCOPE_ALL_WEEKS,
+    SCOPE_NEXT_WEEK,
+    SCOPE_THIS_WEEK,
+    add_personal_lesson,
+    delete_personal_lesson,
+    is_recurring,
+    update_personal_lesson,
+)
 from app.schedule.service import ScheduleService
+from app.schedule.students import (
+    events_for_student,
+    format_event_choice,
+    lesson_title,
+    students_from_events,
+)
 from app.users.models import User
 from app.users.repository import UserRepository
 
@@ -70,6 +96,8 @@ def main_keyboard(selected: str = DENIS) -> ReplyKeyboardMarkup:
             ],
             [KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")],
             [KeyboardButton(text="Неделя"), KeyboardButton(text="Профиль")],
+            [KeyboardButton(text=ADD_BUTTON), KeyboardButton(text=CHANGE_BUTTON)],
+            [KeyboardButton(text=DELETE_BUTTON)],
         ],
         resize_keyboard=True,
     )
@@ -100,6 +128,7 @@ def build_router(
     router = Router()
     pending_broadcasts: dict[int, str] = {}
     pending_edits: dict[int, tuple[str, str, str, dict[str, Any]]] = {}
+    wizards: dict[int, LessonWizard] = {}
     last_manual_updates: dict[int, float] = {}
 
     def active_group(user: User) -> str:
@@ -153,6 +182,63 @@ def build_router(
         university = schedules.available_weeks(user.group_name, today)
         return tuple(sorted({*university, *extra}))
 
+    def reset_wizard(telegram_id: int) -> None:
+        wizards.pop(telegram_id, None)
+
+    async def typed_slot(text: str) -> TimeSlot | str:
+        if assistant is not None:
+            return await assistant.parse_time_slot(text)
+        return parse_time_slot_text(text) or "Не понял время. Напиши так: в 10:40 на полтора часа."
+
+    async def show_student_step(target: Message, wizard: LessonWizard, *, edit: bool) -> None:
+        if events is None:
+            text = "Редактирование занятий сейчас недоступно."
+            if edit:
+                await target.edit_text(text)
+            else:
+                await target.answer(text, reply_markup=main_keyboard(wizard.person))
+            return
+        items = await events.list_for(wizard.person)
+        names = students_from_events(items)
+        wizard.students = names
+        wizard.step = "student"
+        text = ACTION_PROMPT[wizard.action]
+        markup = student_keyboard(names)
+        if edit:
+            await target.edit_text(text, reply_markup=markup)
+        else:
+            await target.answer(text, reply_markup=markup)
+
+    async def show_lessons_step(
+        target: Message, wizard: LessonWizard, telegram_id: int, *, edit: bool
+    ) -> None:
+        assert events is not None and wizard.student is not None
+        items = events_for_student(await events.list_for(wizard.person), wizard.student)
+        if not items:
+            text = f"Занятий с {wizard.student} пока нет. Сначала добавь занятие."
+            reset_wizard(telegram_id)
+            if edit:
+                await target.edit_text(text)
+            else:
+                await target.answer(text, reply_markup=main_keyboard(wizard.person))
+            return
+        wizard.step = "lesson"
+        text = lessons_list_text(wizard.student, items)
+        markup = lesson_keyboard(items)
+        if edit:
+            await target.edit_text(text, reply_markup=markup)
+        else:
+            await target.answer(text, reply_markup=markup)
+
+    def scope_markup(token: str) -> InlineKeyboardMarkup:
+        return inline(
+            [
+                ("На эту неделю", f"edit:scope:this:{token}"),
+                ("На следующую", f"edit:scope:next:{token}"),
+                ("Навсегда", f"edit:scope:forever:{token}"),
+            ]
+        )
+
     async def ensure_user(telegram_id: int) -> User:
         user = await users.get(telegram_id)
         if user is None or user.group_name != DENIS_GROUP:
@@ -205,8 +291,8 @@ def build_router(
         person = PERSON_LABELS[selected_person_of(user)]
         await message.answer(
             f"Сейчас расписание: {person}.\n\n"
-            "Можно написать текстом, что поменять — например, "
-            "перенести репетиторство или добавить пару Саше.",
+            "Чтобы поменять репетиторство, нажми «Добавить занятие», "
+            "«Изменить занятие» или «Убрать занятие».",
             reply_markup=main_keyboard(selected_person_of(user)),
         )
 
@@ -333,6 +419,7 @@ def build_router(
             return
         await ensure_user(message.from_user.id)
         await users.set_selected_person(message.from_user.id, person)
+        reset_wizard(message.from_user.id)
         await message.answer(
             PERSON_PROFILE_TEXT[person],
             reply_markup=main_keyboard(person),
@@ -341,11 +428,15 @@ def build_router(
     @router.message(Command("today"))
     @router.message(F.text == "Сегодня")
     async def today(message: Message) -> None:
+        if message.from_user:
+            reset_wizard(message.from_user.id)
         await show(message, 0)
 
     @router.message(Command("tomorrow"))
     @router.message(F.text == "Завтра")
     async def tomorrow(message: Message) -> None:
+        if message.from_user:
+            reset_wizard(message.from_user.id)
         await show(message, 1)
 
     @router.message(Command("week"))
@@ -353,6 +444,7 @@ def build_router(
     async def week(message: Message) -> None:
         if message.from_user is None:
             return
+        reset_wizard(message.from_user.id)
         user = await ensure_user(message.from_user.id)
         markup = main_keyboard(selected_person_of(user))
         today = datetime.now(timezone).date()
@@ -386,6 +478,7 @@ def build_router(
     @router.message(F.text.in_({"⚙️ Настройки", "Профиль"}))
     async def settings(message: Message) -> None:
         if message.from_user:
+            reset_wizard(message.from_user.id)
             with contextlib.suppress(TelegramBadRequest):
                 await message.delete()
             await show_profile(message, message.from_user.id)
@@ -563,6 +656,99 @@ def build_router(
         await show_profile(callback.message, callback.from_user.id, edit=True)
         await callback.answer()
 
+    @router.message(F.text.in_(ACTION_BUTTONS))
+    async def lesson_action(message: Message) -> None:
+        if message.from_user is None:
+            return
+        user = await ensure_user(message.from_user.id)
+        person = selected_person_of(user)
+        action = ACTION_BY_TEXT[message.text or ""]
+        wizard = LessonWizard(action=action, person=person, step="student")
+        wizards[message.from_user.id] = wizard
+        await show_student_step(message, wizard, edit=False)
+
+    @router.callback_query(F.data.startswith("wiz:"))
+    async def lesson_wizard(callback: CallbackQuery) -> None:
+        assert isinstance(callback.message, Message)
+        if callback.from_user is None:
+            await callback.answer()
+            return
+        user_id = callback.from_user.id
+        data = callback.data or ""
+        if data == "wiz:cancel":
+            reset_wizard(user_id)
+            await callback.message.edit_text("Отменил.")
+            await callback.answer()
+            return
+        wizard = wizards.get(user_id)
+        if wizard is None:
+            await callback.answer("Начни заново с кнопки внизу.")
+            return
+        if data == "wiz:new":
+            wizard.step = "name"
+            await callback.message.edit_text("Напиши имя ученика, например Кристина.")
+            await callback.answer()
+            return
+        if data.startswith("wiz:stu:"):
+            index = int(data.split(":")[-1])
+            if index < 0 or index >= len(wizard.students):
+                await callback.answer("Этот ученик уже неактуален.")
+                return
+            wizard.student = wizard.students[index]
+            await _after_student_chosen(callback.message, wizard, user_id, edit=True)
+            await callback.answer()
+            return
+        if data.startswith("wiz:wd:"):
+            wizard.weekday = int(data.split(":")[-1])
+            wizard.step = "time"
+            day = WEEKDAYS[wizard.weekday]
+            await callback.message.edit_text(
+                f"Занятие с {wizard.student}, {day}.\n\n"
+                "Напиши время начала и длительность, например: в 10:40 на полтора часа."
+            )
+            await callback.answer()
+            return
+        if data.startswith("wiz:ev:"):
+            event_id = int(data.split(":")[-1])
+            if events is None:
+                await callback.answer()
+                return
+            current = await events.get(event_id)
+            if current is None or current.person != wizard.person:
+                await callback.answer("Занятие не найдено.")
+                return
+            wizard.event_id = event_id
+            if wizard.action == DELETE:
+                today = datetime.now(timezone).date()
+                reply = await delete_personal_lesson(events, today, current, scope=SCOPE_ALL_WEEKS)
+                reset_wizard(user_id)
+                await callback.message.edit_text(reply)
+                await callback.answer()
+                return
+            wizard.step = "time"
+            await callback.message.edit_text(
+                f"Меняем {format_event_choice(current)} с {wizard.student}.\n\n"
+                "Напиши новое время и длительность, например: в 12 на час. "
+                "Можно сразу указать другой день."
+            )
+            await callback.answer()
+            return
+        await callback.answer()
+
+    async def _after_student_chosen(
+        target: Message, wizard: LessonWizard, telegram_id: int, *, edit: bool
+    ) -> None:
+        if wizard.action == ADD:
+            wizard.step = "weekday"
+            text = f"В какой день занятие с {wizard.student}?"
+            markup = weekday_keyboard()
+            if edit:
+                await target.edit_text(text, reply_markup=markup)
+            else:
+                await target.answer(text, reply_markup=markup)
+            return
+        await show_lessons_step(target, wizard, telegram_id, edit=edit)
+
     @router.callback_query(F.data.startswith("edit:scope:"))
     async def edit_scope(callback: CallbackQuery) -> None:
         assert isinstance(callback.message, Message)
@@ -577,24 +763,62 @@ def build_router(
             return
         pending_edits.pop(callback.from_user.id, None)
         person, original, _, mutation = pending
-        confirmed_scope = SCOPE_THIS_WEEK if choice == "this" else SCOPE_ALL_WEEKS
-        if assistant is None:
-            await callback.message.edit_text("Нейронка не подключена.")
+        confirmed_scope = {
+            "this": SCOPE_THIS_WEEK,
+            "next": SCOPE_NEXT_WEEK,
+            "forever": SCOPE_ALL_WEEKS,
+            "both": SCOPE_ALL_WEEKS,
+        }.get(choice)
+        if confirmed_scope is None:
             await callback.answer()
             return
-        bot = getattr(callback, "bot", None)
-        chat = getattr(callback.message, "chat", None)
-        if bot is not None and chat is not None:
-            with contextlib.suppress(TelegramAPIError):
-                await bot.send_chat_action(chat.id, "typing")
-        if mutation.get("name"):
-            reply = await assistant.apply_pending(person, mutation, confirmed_scope)
-        else:
-            reply = await assistant.reply(person, original, confirmed_scope=confirmed_scope)
+        reply = await _apply_mutation(person, mutation, confirmed_scope, original)
         if reply.startswith(ASK_SCOPE_PREFIX):
             reply = parse_scope_prompt(reply)[1]
         await callback.message.edit_text(reply)
         await callback.answer()
+
+    async def _apply_mutation(
+        person: str,
+        mutation: dict[str, Any],
+        confirmed_scope: str,
+        original: str,
+    ) -> str:
+        today = datetime.now(timezone).date()
+        args = dict(mutation.get("args") or {})
+        name = str(mutation.get("name") or "")
+        if events is not None and name == "update_event" and args.get("event_id") is not None:
+            current = await events.get(int(args["event_id"]))
+            if current is None or current.person != person:
+                return "Занятие не найдено."
+            weekday_raw = args.get("weekday")
+            weekday = WEEKDAY_ALIASES.get(str(weekday_raw).casefold()) if weekday_raw else None
+            start = (
+                datetime.strptime(str(args["start"]), "%H:%M").time() if args.get("start") else None
+            )
+            end = datetime.strptime(str(args["end"]), "%H:%M").time() if args.get("end") else None
+            title = str(args["title"]).strip() if args.get("title") else None
+            return await update_personal_lesson(
+                events,
+                person,
+                today,
+                current,
+                start_time=start,
+                end_time=end,
+                weekday=weekday,
+                subject=title,
+                scope=confirmed_scope,
+            )
+        if events is not None and name == "delete_event" and args.get("event_id") is not None:
+            current = await events.get(int(args["event_id"]))
+            if current is None or current.person != person:
+                return "Занятие не найдено."
+            return await delete_personal_lesson(events, today, current, scope=confirmed_scope)
+        if assistant is None:
+            return "Нейронка не подключена."
+        if name:
+            return await assistant.apply_pending(person, mutation, confirmed_scope)
+        return await assistant.reply(person, original, confirmed_scope=confirmed_scope)
 
     @router.message(F.text)
     async def free_chat(message: Message) -> None:
@@ -604,32 +828,107 @@ def build_router(
         user = await ensure_user(message.from_user.id)
         person = selected_person_of(user)
         markup = main_keyboard(person)
-        if assistant is None:
-            await message.answer(
-                "Напиши, что изменить в расписании, когда нейронка будет подключена.",
-                reply_markup=markup,
-            )
+        wizard = wizards.get(message.from_user.id)
+        if wizard is not None and wizard.step == "name":
+            name = text[:64].strip()
+            if len(name) < 2:
+                await message.answer("Слишком короткое имя. Напиши ещё раз.")
+                return
+            wizard.student = name
+            await _after_student_chosen(message, wizard, message.from_user.id, edit=False)
             return
+        if wizard is not None and wizard.step == "time":
+            await _handle_time_text(message, wizard, text, person, markup)
+            return
+        await message.answer(
+            "Выбери действие кнопками: добавить, изменить или убрать занятие.",
+            reply_markup=markup,
+        )
+
+    async def _handle_time_text(
+        message: Message,
+        wizard: LessonWizard,
+        text: str,
+        person: str,
+        markup: ReplyKeyboardMarkup,
+    ) -> None:
+        assert message.from_user is not None
         bot = getattr(message, "bot", None)
         chat = getattr(message, "chat", None)
         if bot is not None and chat is not None:
             with contextlib.suppress(TelegramAPIError):
                 await bot.send_chat_action(chat.id, "typing")
-        reply = await assistant.reply(person, text)
-        if reply.startswith(ASK_SCOPE_PREFIX):
-            mutation, summary = parse_scope_prompt(reply)
-            token = secrets.token_hex(4)
-            pending_edits[message.from_user.id] = (person, text, token, mutation)
-            await message.answer(
-                summary,
-                reply_markup=inline(
-                    [
-                        ("Только эту неделю", f"edit:scope:this:{token}"),
-                        ("На обе недели", f"edit:scope:both:{token}"),
-                    ]
-                ),
-            )
+        parsed = await typed_slot(text)
+        if isinstance(parsed, str):
+            await message.answer(parsed, reply_markup=markup)
             return
+        weekday = wizard.weekday if wizard.weekday is not None else parsed.weekday
+        if wizard.action == ADD:
+            if weekday is None:
+                await message.answer("Сначала выбери день кнопкой.")
+                return
+            if events is None:
+                await message.answer(
+                    "Редактирование занятий сейчас недоступно.",
+                    reply_markup=markup,
+                )
+                return
+            created = await add_personal_lesson(
+                events,
+                wizard.person,
+                weekday=weekday,
+                start_time=parsed.start,
+                end_time=parsed.end,
+                subject=lesson_title(wizard.student or text),
+            )
+            reset_wizard(message.from_user.id)
+            await message.answer(f"Добавил: {describe_event(created)}", reply_markup=markup)
+            return
+        if wizard.event_id is None or events is None:
+            await message.answer("Начни изменение заново кнопкой.", reply_markup=markup)
+            reset_wizard(message.from_user.id)
+            return
+        current = await events.get(wizard.event_id)
+        if current is None or current.person != wizard.person:
+            await message.answer("Занятие не найдено.", reply_markup=markup)
+            reset_wizard(message.from_user.id)
+            return
+        args: dict[str, Any] = {
+            "event_id": current.id,
+            "start": parsed.start.strftime("%H:%M"),
+            "end": parsed.end.strftime("%H:%M"),
+        }
+        if weekday is not None:
+            args["weekday"] = WEEKDAYS[weekday]
+        if is_recurring(current):
+            token = secrets.token_hex(4)
+            pending_edits[message.from_user.id] = (
+                person,
+                text,
+                token,
+                {"name": "update_event", "args": args},
+            )
+            await message.answer(
+                f"Куда поставить {format_event_choice(current)}: "
+                "на эту неделю, на следующую или навсегда?\n\n"
+                f"Новое время: {parsed.start:%H:%M}–{parsed.end:%H:%M}"
+                + (f", {WEEKDAYS[weekday]}" if weekday is not None else ""),
+                reply_markup=scope_markup(token),
+            )
+            reset_wizard(message.from_user.id)
+            return
+        today = datetime.now(timezone).date()
+        reply = await update_personal_lesson(
+            events,
+            wizard.person,
+            today,
+            current,
+            start_time=parsed.start,
+            end_time=parsed.end,
+            weekday=weekday,
+            scope=SCOPE_ALL_WEEKS,
+        )
+        reset_wizard(message.from_user.id)
         await message.answer(reply, reply_markup=markup)
 
     return router

@@ -13,14 +13,25 @@ def day_title(day: date) -> str:
     return f"{WEEKDAYS[day.weekday()]}, {day:%d.%m.%Y}"
 
 
-def _pair_icon(number: int) -> str:
+def _is_tutoring(lesson: Lesson) -> bool:
+    return (
+        lesson.lesson_type == "репетиторство"
+        or lesson.location == "репетиторство"
+        or lesson.subject.casefold().startswith("репетиторство")
+    )
+
+
+def _pair_icon(lesson: Lesson) -> str:
+    if _is_tutoring(lesson):
+        return "🧑‍🏫"
+    number = lesson.pair_number
     return f"{number}️⃣" if 1 <= number <= 9 else "▫️"
 
 
 def format_lesson(lesson: Lesson) -> str:
     place = "онлайн" if lesson.is_online else (lesson.location or "ауд. уточняется")
     lines = [
-        f"{_pair_icon(lesson.pair_number)}  "
+        f"{_pair_icon(lesson)}  "
         f"<i>{lesson.start_time:%H:%M} — {lesson.end_time:%H:%M}</i>  "
         f"<b>{escape(place)}</b>",
         escape(lesson.subject),
@@ -76,8 +87,7 @@ def format_changes(changes: tuple[LessonChange, ...]) -> str:
             lines = [
                 f"<b>✏️ {escape(after.subject)}</b>",
                 day_title(after.date),
-                f"{_pair_icon(after.pair_number)}  "
-                f"<i>{after.start_time:%H:%M} — {after.end_time:%H:%M}</i>",
+                f"{_pair_icon(after)}  <i>{after.start_time:%H:%M} — {after.end_time:%H:%M}</i>",
             ]
             labels = {
                 "start_time": "Начало",

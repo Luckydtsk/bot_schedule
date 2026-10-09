@@ -42,6 +42,25 @@ def test_schedule_format_is_user_friendly():
     assert "<b>Среда, 02.09.2026 — 1 пара</b>" in text
     assert "<i>Иванов И.И.</i>" in text
     assert "<i>09:40 — 11:00</i>" in text and "<b>401</b>" in text
+    assert "2️⃣" in text
+
+
+def test_tutoring_uses_its_own_icon():
+    tutoring = Lesson(
+        "G",
+        date(2026, 9, 2),
+        0,
+        time(9, 0),
+        time(10, 30),
+        "Репетиторство с Кристиной",
+        None,
+        "репетиторство",
+        lesson_type="репетиторство",
+    )
+    text = format_schedule((tutoring,))
+    assert "🧑‍🏫" in text
+    assert "▫️" not in text
+    assert "0️⃣" not in text
 
 
 def test_empty_and_safe_split():

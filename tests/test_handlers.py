@@ -3,8 +3,12 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import app.bot.handlers as handlers
+from app.people import DENIS
+from app.schedule.event_repository import EventRepository
 from app.schedule.models import Lesson, Schedule
 from app.schedule.service import ScheduleService
+from app.schedule.students import lesson_title
+from app.storage.database import Database
 
 
 class Users:
@@ -156,7 +160,7 @@ async def test_start_and_settings_flows(monkeypatch):
     message = FakeMessage()
     await callbacks(router, "message")["start"](message)
     assert users.saved == (7, 3, "РИС-24-3")
-    assert "Можно написать текстом" in message.answers[0][0]
+    assert "Добавить занятие" in message.answers[0][0]
     assert "уровень образования" not in message.answers[0][0]
     row = [button.text for button in message.answers[0][1].keyboard[0]]
     assert row == ["Саша", "Денис ✓"]
@@ -215,7 +219,7 @@ async def test_sasha_and_denis_person_buttons(monkeypatch):
     assert [button.text for button in denis.answers[0][1].keyboard[0]] == ["Саша", "Денис ✓"]
 
 
-async def test_free_chat_uses_selected_profile(monkeypatch):
+async def test_free_chat_asks_to_use_buttons(monkeypatch):
     monkeypatch.setattr(handlers, "Message", FakeMessage)
 
     class Assistant:
@@ -224,71 +228,19 @@ async def test_free_chat_uses_selected_profile(monkeypatch):
 
         async def reply(self, person, text, confirmed_scope=None):
             self.calls.append((person, text, confirmed_scope))
-            return f"ok:{person}:{text}"
+            return "не должно вызываться"
 
-    users = Users(
-        SimpleNamespace(
-            telegram_id=7,
-            group_name="РИС-24-3",
-            notifications_enabled=True,
-            selected_person="sasha",
-        )
-    )
     assistant = Assistant()
     router = handlers.build_router(
-        users,
+        Users(),
         ScheduleService(Schedule({3: ("РИС-24-3",)}, ())),
         ZoneInfo("Asia/Yekaterinburg"),
         assistant=assistant,
     )
     message = FakeMessage("Соню перенеси на воскресенье")
     await callbacks(router, "message")["free_chat"](message)
-    assert assistant.calls == [("sasha", "Соню перенеси на воскресенье", None)]
-    assert message.answers[0][0] == "ok:sasha:Соню перенеси на воскресенье"
-
-
-async def test_free_chat_asks_week_scope_then_applies(monkeypatch):
-    monkeypatch.setattr(handlers, "Message", FakeMessage)
-
-    class Assistant:
-        def __init__(self):
-            self.calls = []
-
-        async def reply(self, person, text, confirmed_scope=None):
-            self.calls.append((person, text, confirmed_scope))
-            if confirmed_scope is None:
-                return (
-                    '<<ASK_SCOPE>>{"name": "update_event", "args": {"event_id": 1}}\n'
-                    "Изменить только на эту неделю или на обе недели?\n\n"
-                    "Планирую перенести Соню."
-                )
-            return f"сделано:{confirmed_scope}"
-
-        async def apply_pending(self, person, pending, confirmed_scope):
-            self.calls.append((person, pending, confirmed_scope))
-            return f"сделано:{confirmed_scope}"
-
-    assistant = Assistant()
-    router = handlers.build_router(
-        Users(),
-        ScheduleService(),
-        ZoneInfo("Asia/Yekaterinburg"),
-        assistant=assistant,
-    )
-    message = FakeMessage("Соню перенеси на воскресенье")
-    await callbacks(router, "message")["free_chat"](message)
-    text, markup = message.answers[0]
-    assert "эту неделю" in text
-    this_week = markup.inline_keyboard[0][0].callback_data
-    assert this_week.startswith("edit:scope:this:")
-    selected = FakeCallback(this_week)
-    await callbacks(router, "callback_query")["edit_scope"](selected)
-    assert assistant.calls[-1] == (
-        "denis",
-        {"name": "update_event", "args": {"event_id": 1}},
-        "this_week",
-    )
-    assert selected.message.edits[-1][0] == "сделано:this_week"
+    assert assistant.calls == []
+    assert "кнопками" in message.answers[0][0]
 
 
 async def test_week_menu_shows_current_and_next_week(monkeypatch):
@@ -444,3 +396,126 @@ async def test_manual_update_reports_busy_and_failures(monkeypatch):
     await update(failed)
     assert failing.calls == 1
     assert "Не удалось обновить" in failed.message.edits[0][0]
+
+
+def _button_data(markup, text):
+    for row in markup.inline_keyboard:
+        for button in row:
+            if button.text == text:
+                return button.callback_data
+    raise AssertionError(text)
+
+
+async def _seeded_router(tmp_path, monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'wizard.db'}")
+    await db.create_schema()
+    repo = EventRepository(db.sessions)
+    await repo.seed_if_empty()
+    router = handlers.build_router(
+        Users(),
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        events=repo,
+    )
+    return db, repo, router
+
+
+async def test_add_lesson_with_time_phrase(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Добавить занятие")
+    await action(start)
+    assert "С кем добавить" in start.answers[0][0]
+    assert "Добавить ученика" in [row[0].text for row in start.answers[0][1].inline_keyboard]
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
+    await wizard(picked)
+    friday = FakeCallback(_button_data(picked.message.edits[-1][1], "Пт"))
+    await wizard(friday)
+    await callbacks(router, "message")["free_chat"](FakeMessage("в девять полтора часа"))
+    items = [
+        item
+        for item in await repo.list_for(DENIS)
+        if item.subject == lesson_title("Соня") and item.start_time == time(9, 0)
+    ]
+    assert len(items) == 1
+    assert items[0].weekday == 4
+    assert items[0].on_date is None
+    assert items[0].end_time == time(10, 30)
+    await db.close()
+
+
+async def test_delete_lesson_without_neural_net(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    before = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
+    assert before
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Убрать занятие")
+    await action(start)
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
+    await wizard(picked)
+    first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
+    confirm = FakeCallback(first_lesson)
+    await wizard(confirm)
+    assert "Удалено" in confirm.message.edits[-1][0]
+    after = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
+    assert len(after) == len(before) - 1
+    await db.close()
+
+
+async def test_change_lesson_asks_week_scope(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Изменить занятие")
+    await action(start)
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
+    await wizard(picked)
+    first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
+    chosen = FakeCallback(first_lesson)
+    await wizard(chosen)
+    time_message = FakeMessage("в двенадцать на час")
+    await callbacks(router, "message")["free_chat"](time_message)
+    assert "навсегда" in time_message.answers[0][0]
+    labels = [row[0].text for row in time_message.answers[0][1].inline_keyboard]
+    assert labels == ["На эту неделю", "На следующую", "Навсегда"]
+    this_week = time_message.answers[0][1].inline_keyboard[0][0].callback_data
+    selected = FakeCallback(this_week)
+    await callbacks(router, "callback_query")["edit_scope"](selected)
+    assert "Только на эту неделю" in selected.message.edits[-1][0]
+    await db.close()
+
+
+async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Изменить занятие")
+    await action(start)
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
+    await wizard(picked)
+    first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
+    chosen = FakeCallback(first_lesson)
+    await wizard(chosen)
+    time_message = FakeMessage("в двенадцать на час")
+    await callbacks(router, "message")["free_chat"](time_message)
+    next_week = _button_data(time_message.answers[0][1], "На следующую")
+    selected = FakeCallback(next_week)
+    await callbacks(router, "callback_query")["edit_scope"](selected)
+    assert "следующую неделю" in selected.message.edits[-1][0]
+    today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
+    next_friday = today - timedelta(days=today.weekday()) + timedelta(days=11)
+    original = next(
+        item for item in await repo.list_for(DENIS) if "Соней" in item.subject and item.weekday == 4
+    )
+    assert next_friday.isoformat() in (original.skip_dates or "")
+    moved = [
+        item
+        for item in await repo.list_for(DENIS)
+        if item.on_date == next_friday and "Соней" in item.subject
+    ]
+    assert len(moved) == 1
+    assert moved[0].start_time == time(12, 0)
+    await db.close()

@@ -9,22 +9,22 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.llm.time_slot import TimeSlot, parse_time_slot_text
 from app.people import PERSON_LABELS
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import (
-    WEEKDAYS,
-    PersonalEvent,
-    date_on_current_week,
-    describe_event,
-    format_skip_dates,
-    parse_skip_dates,
+from app.schedule.events import WEEKDAYS, PersonalEvent, describe_event
+from app.schedule.mutations import (
+    SCOPE_ALL_WEEKS,
+    SCOPE_NEXT_WEEK,
+    SCOPE_THIS_WEEK,
+    delete_personal_lesson,
+    is_recurring,
+    update_personal_lesson,
 )
 
 log = logging.getLogger(__name__)
 
 ASK_SCOPE_PREFIX = "<<ASK_SCOPE>>"
-SCOPE_THIS_WEEK = "this_week"
-SCOPE_ALL_WEEKS = "all_weeks"
 
 WEEKDAY_ALIASES = {
     "понедельник": 0,
@@ -97,8 +97,10 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "scope": {
                         "type": "string",
-                        "enum": [SCOPE_THIS_WEEK, SCOPE_ALL_WEEKS],
-                        "description": "this_week — только текущая неделя; all_weeks — навсегда",
+                        "enum": [SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS],
+                        "description": (
+                            "this_week — эта неделя; next_week — следующая; all_weeks — навсегда"
+                        ),
                     },
                 },
                 "required": ["event_id"],
@@ -117,7 +119,7 @@ TOOLS: list[dict[str, Any]] = [
                     "event_id": {"type": "integer"},
                     "scope": {
                         "type": "string",
-                        "enum": [SCOPE_THIS_WEEK, SCOPE_ALL_WEEKS],
+                        "enum": [SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS],
                     },
                 },
                 "required": ["event_id"],
@@ -130,7 +132,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "ask_week_scope",
             "description": (
-                "Спросить, менять повторяющееся занятие только на эту неделю или навсегда. "
+                "Спросить, менять повторяющееся занятие на эту неделю, на следующую или навсегда. "
                 "Вызови перед update_event или delete_event, если пользователь ещё не выбрал."
             ),
             "parameters": {
@@ -197,7 +199,7 @@ class ScheduleAssistant:
         today = datetime.now(self.timezone).date()
         label = PERSON_LABELS[person]
         scope_hint = ""
-        if confirmed_scope in {SCOPE_THIS_WEEK, SCOPE_ALL_WEEKS}:
+        if confirmed_scope in {SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS}:
             scope_hint = (
                 f"Пользователь уже выбрал scope={confirmed_scope}. "
                 "Сразу вызови update_event или delete_event с этим scope, не спрашивай снова. "
@@ -218,8 +220,8 @@ class ScheduleAssistant:
                     "(без конкретной даты) и пользователь ещё не выбрал неделю, "
                     "вызови ask_week_scope и ничего не меняй. "
                     f"{scope_hint}"
-                    "this_week — только текущая календарная неделя; "
-                    "all_weeks — обе недели, навсегда. "
+                    "this_week — эта календарная неделя; next_week — следующая; "
+                    "all_weeks — навсегда. "
                     "Отвечай коротко по-русски, что именно изменилось."
                 ),
             },
@@ -268,15 +270,60 @@ class ScheduleAssistant:
             return parse_scope_prompt(result)[1]
         return result
 
-    async def _complete(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        body = {
+    async def parse_time_slot(self, text: str) -> TimeSlot | str:
+        local = parse_time_slot_text(text)
+        if local is not None:
+            return local
+        if not self.enabled:
+            return "Не понял время. Напиши так: в 10:40 на полтора часа."
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Извлеки время начала и длительность занятия из фразы на русском. "
+                    "Верни только JSON вида "
+                    '{"start":"HH:MM","duration_minutes":90,"weekday":"пятница"|null}. '
+                    "weekday указывай, только если день явно назван."
+                ),
+            },
+            {"role": "user", "content": text},
+        ]
+        try:
+            payload = await self._complete(messages, tools=None)
+            content = str(payload["choices"][0]["message"].get("content") or "")
+            data = _extract_json(content)
+            start = _parse_time(str(data["start"]))
+            if data.get("duration_minutes"):
+                duration = int(data["duration_minutes"])
+            elif data.get("end"):
+                end = _parse_time(str(data["end"]))
+                duration = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+                if duration <= 0:
+                    duration += 24 * 60
+            else:
+                return "Не понял длительность. Напиши, например: на полтора часа."
+            weekday = _parse_weekday(str(data["weekday"]) if data.get("weekday") else None)
+            if duration <= 0:
+                return "Не понял длительность. Напиши, например: на полтора часа."
+            return TimeSlot(start=start, duration_minutes=duration, weekday=weekday)
+        except Exception:
+            log.exception("Time slot parse failed")
+            return "Не понял время. Напиши так: в 10:40 на полтора часа."
+
+    async def _complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = TOOLS,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
             "temperature": 0.1,
             "reasoning": {"enabled": False},
         }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -312,7 +359,7 @@ class ScheduleAssistant:
                 return "Редактируемых занятий нет."
             return "\n".join(describe_event(item) for item in items)
         if name == "ask_week_scope":
-            if confirmed_scope in {SCOPE_THIS_WEEK, SCOPE_ALL_WEEKS}:
+            if confirmed_scope in {SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS}:
                 return (
                     f"Пользователь уже выбрал {confirmed_scope}. "
                     "Сразу вызови update_event или delete_event с этим scope."
@@ -341,13 +388,23 @@ class ScheduleAssistant:
             if current is None or current.person != person:
                 return "Занятие не найдено в этом профиле."
             scope = _resolved_scope(args, confirmed_scope)
-            if _is_recurring(current) and scope is None:
+            if is_recurring(current) and scope is None:
                 return _scope_question(
                     _describe_planned_update(current, args),
                     {"name": "update_event", "args": args},
                 )
-            if _is_recurring(current) and scope == SCOPE_THIS_WEEK:
-                return await self._update_this_week(person, today, current, args)
+            if is_recurring(current) and scope in {SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK}:
+                return await update_personal_lesson(
+                    self.events,
+                    person,
+                    today,
+                    current,
+                    start_time=_parse_time(str(args["start"])) if args.get("start") else None,
+                    end_time=_parse_time(str(args["end"])) if args.get("end") else None,
+                    weekday=_parse_weekday(str(args["weekday"])) if args.get("weekday") else None,
+                    subject=str(args["title"]).strip() if args.get("title") else None,
+                    scope=scope,
+                )
             updated = await self.events.update(event_id, **_update_changes(current, args, today))
             return f"Обновлено: {describe_event(updated)}" if updated else "Не удалось обновить."
         if name == "delete_event":
@@ -356,67 +413,20 @@ class ScheduleAssistant:
             if current is None or current.person != person:
                 return "Занятие не найдено в этом профиле."
             scope = _resolved_scope(args, confirmed_scope)
-            if _is_recurring(current) and scope is None:
+            if is_recurring(current) and scope is None:
                 return _scope_question(
                     _describe_planned_delete(current),
                     {"name": "delete_event", "args": args},
                 )
-            if _is_recurring(current) and scope == SCOPE_THIS_WEEK:
-                skip_day = date_on_current_week(current.weekday or today.weekday(), today)
-                skips = set(parse_skip_dates(current.skip_dates))
-                skips.add(skip_day)
-                await self.events.update(current.id, skip_dates=format_skip_dates(skips))
-                return (
-                    f"Только на эту неделю отменено: {describe_event(current)} "
-                    f"({skip_day.isoformat()})."
-                )
-            await self.events.delete(event_id)
-            return f"Удалено: {describe_event(current)}"
+            return await delete_personal_lesson(
+                self.events, today, current, scope=scope or SCOPE_ALL_WEEKS
+            )
         return f"Неизвестный инструмент: {name}"
-
-    async def _update_this_week(
-        self,
-        person: str,
-        today: date,
-        current: PersonalEvent,
-        args: dict[str, Any],
-    ) -> str:
-        weekday = current.weekday if current.weekday is not None else today.weekday()
-        skip_day = date_on_current_week(weekday, today)
-        skips = set(parse_skip_dates(current.skip_dates))
-        skips.add(skip_day)
-        await self.events.update(current.id, skip_dates=format_skip_dates(skips))
-        new_weekday = _parse_weekday(str(args["weekday"])) if args.get("weekday") else weekday
-        new_date = _relative_date(args.get("date"), today)
-        if new_date is None:
-            target_weekday = new_weekday if new_weekday is not None else weekday
-            new_date = date_on_current_week(target_weekday, today)
-        replacement = await self.events.add(
-            person,
-            weekday=None,
-            on_date=new_date,
-            start_time=_parse_time(str(args["start"])) if args.get("start") else current.start_time,
-            end_time=_parse_time(str(args["end"])) if args.get("end") else current.end_time,
-            subject=str(args.get("title") or current.subject).strip(),
-            teacher=current.teacher,
-            location=args.get("location") or current.location,
-            lesson_type=args.get("lesson_type") or current.lesson_type,
-            pair_number=current.pair_number,
-            parity="always",
-        )
-        return (
-            f"Только на эту неделю: {describe_event(current)} не будет "
-            f"{skip_day.isoformat()}, вместо этого {describe_event(replacement)}."
-        )
-
-
-def _is_recurring(event: PersonalEvent) -> bool:
-    return event.on_date is None and event.weekday is not None
 
 
 def _resolved_scope(args: dict[str, Any], confirmed_scope: str | None) -> str | None:
     for value in (confirmed_scope, args.get("scope")):
-        if value in {SCOPE_THIS_WEEK, SCOPE_ALL_WEEKS}:
+        if value in {SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS}:
             return str(value)
     return None
 
@@ -425,7 +435,7 @@ def _scope_question(plan: str, pending: dict[str, Any] | None = None) -> str:
     text = plan.strip() or "Планирую изменить выбранное занятие."
     payload = json.dumps(pending or {}, ensure_ascii=False)
     return (
-        f"{ASK_SCOPE_PREFIX}{payload}\nИзменить только на эту неделю или на обе недели?\n\n{text}"
+        f"{ASK_SCOPE_PREFIX}{payload}\nИзменить на эту неделю, на следующую или навсегда?\n\n{text}"
     )
 
 
@@ -487,6 +497,21 @@ def _update_changes(current: PersonalEvent, args: dict[str, Any], today: date) -
         if on_date is not None:
             changes["weekday"] = None
     return changes
+
+
+def _extract_json(content: str) -> dict[str, Any]:
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.removeprefix("json").strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("no json object")
+    loaded = json.loads(text[start : end + 1])
+    if not isinstance(loaded, dict):
+        raise ValueError("json is not an object")
+    return loaded
 
 
 def _relative_date(value: str | None, today: date) -> date | None:

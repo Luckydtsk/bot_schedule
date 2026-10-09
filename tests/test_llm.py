@@ -228,3 +228,21 @@ async def test_assistant_without_key_explains_setup():
     )
     text = await assistant.reply(DENIS, "перенеси Соню")
     assert "не подключена" in text
+
+
+async def test_parse_time_slot_uses_local_parser_without_model():
+    async def post(url, headers, body):
+        raise AssertionError("local time phrases should not call the model")
+
+    assistant = ScheduleAssistant(
+        EventRepository.__new__(EventRepository),
+        ZoneInfo("Asia/Yekaterinburg"),
+        "test-key",
+        "https://openrouter.ai/api/v1",
+        "qwen/qwen3-32b",
+        post=post,
+    )
+    slot = await assistant.parse_time_slot("в десять сорок полтора часа")
+    assert not isinstance(slot, str)
+    assert slot.start == time(10, 40)
+    assert slot.duration_minutes == 90

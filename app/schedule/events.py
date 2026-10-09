@@ -25,9 +25,13 @@ def format_skip_dates(days: set[date] | tuple[date, ...]) -> str:
     return ",".join(sorted(day.isoformat() for day in days))
 
 
-def date_on_current_week(weekday: int, today: date) -> date:
-    monday = today - timedelta(days=today.weekday())
+def date_on_week(weekday: int, today: date, weeks_ahead: int = 0) -> date:
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=weeks_ahead)
     return monday + timedelta(days=weekday)
+
+
+def date_on_current_week(weekday: int, today: date) -> date:
+    return date_on_week(weekday, today, 0)
 
 
 @dataclass(frozen=True, slots=True)
