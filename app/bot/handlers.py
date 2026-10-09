@@ -77,9 +77,11 @@ from app.schedule.service import ScheduleService
 from app.schedule.students import (
     events_for_student,
     format_event_choice,
+    is_tutoring_event,
     lesson_title,
     ordered_student_events,
     students_from_events,
+    tutoring_events,
 )
 from app.users.models import User
 from app.users.repository import UserRepository
@@ -199,7 +201,7 @@ def build_router(
             else:
                 await target.answer(text, reply_markup=main_keyboard(wizard.person))
             return
-        items = await events.list_for(wizard.person)
+        items = tutoring_events(await events.list_for(wizard.person))
         names = students_from_events(items)
         wizard.students = names
         wizard.step = "student"
@@ -215,7 +217,10 @@ def build_router(
     ) -> None:
         assert events is not None and wizard.student is not None
         items = ordered_student_events(
-            events_for_student(await events.list_for(wizard.person), wizard.student)
+            events_for_student(
+                tutoring_events(await events.list_for(wizard.person)),
+                wizard.student,
+            )
         )
         if not items:
             text = f"Занятий с {wizard.student} пока нет. Сначала добавь занятие."
@@ -717,8 +722,8 @@ def build_router(
                 await callback.answer()
                 return
             current = await events.get(event_id)
-            if current is None or current.person != wizard.person:
-                await callback.answer("Занятие не найдено.")
+            if current is None or current.person != wizard.person or not is_tutoring_event(current):
+                await callback.answer("Это занятие из основного расписания.")
                 return
             wizard.event_id = event_id
             if wizard.action == DELETE:

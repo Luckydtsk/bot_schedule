@@ -421,6 +421,33 @@ async def _seeded_router(tmp_path, monkeypatch):
     return db, repo, router
 
 
+async def test_sasha_buttons_ignore_her_main_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(handlers, "Message", FakeMessage)
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'sasha.db'}")
+    await db.create_schema()
+    repo = EventRepository(db.sessions)
+    await repo.seed_if_empty()
+    users = Users(
+        SimpleNamespace(
+            telegram_id=7,
+            group_name="РИС-24-3",
+            notifications_enabled=True,
+            selected_person="sasha",
+        )
+    )
+    router = handlers.build_router(
+        users,
+        ScheduleService(),
+        ZoneInfo("Asia/Yekaterinburg"),
+        events=repo,
+    )
+    message = FakeMessage("Добавить занятие")
+    await callbacks(router, "message")["lesson_action"](message)
+    labels = [row[0].text for row in message.answers[0][1].inline_keyboard]
+    assert labels == ["Добавить ученика", "Отмена"]
+    await db.close()
+
+
 async def test_add_lesson_with_time_phrase(tmp_path, monkeypatch):
     db, repo, router = await _seeded_router(tmp_path, monkeypatch)
     action = callbacks(router, "message")["lesson_action"]

@@ -36,6 +36,18 @@ def student_from_subject(subject: str) -> str:
     return _INSTRUMENTAL_TO_NAME.get(form.casefold(), form)
 
 
+def is_tutoring_event(event: PersonalEvent) -> bool:
+    return (
+        event.lesson_type == "репетиторство"
+        or event.location == "репетиторство"
+        or event.subject.casefold().startswith("репетиторство")
+    )
+
+
+def tutoring_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalEvent, ...]:
+    return tuple(event for event in events if is_tutoring_event(event))
+
+
 def events_for_student(events: tuple[PersonalEvent, ...], name: str) -> tuple[PersonalEvent, ...]:
     title = lesson_title(name)
     wanted = name.casefold()

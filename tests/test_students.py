@@ -5,10 +5,12 @@ from app.schedule.events import PersonalEvent
 from app.schedule.students import (
     events_for_student,
     format_event_choice,
+    is_tutoring_event,
     lesson_title,
     ordered_student_events,
     student_from_subject,
     students_from_events,
+    tutoring_events,
 )
 
 
@@ -66,3 +68,23 @@ def test_base_lessons_come_before_moved_ones():
     assert [item.id for item in ordered] == [2, 1, 3]
     assert format_event_choice(thursday) == "четверг 16:30–18:00"
     assert format_event_choice(moved) == "(20) воскресенье 12:00–13:00"
+
+
+def test_sasha_classes_are_not_tutoring_students():
+    college = PersonalEvent(
+        1,
+        DENIS,
+        0,
+        None,
+        time(9, 40),
+        time(11, 10),
+        2,
+        "Информатика в приложении к отрасли",
+        "Родионова Т.А.",
+        "403 к.Б (ХТФ)",
+        "лекция",
+    )
+    lesson = _event(2, 4, time(16, 50), time(17, 50), "Репетиторство с Соней")
+    assert not is_tutoring_event(college)
+    assert tutoring_events((college, lesson)) == (lesson,)
+    assert students_from_events(tutoring_events((college, lesson))) == ("Соня",)
