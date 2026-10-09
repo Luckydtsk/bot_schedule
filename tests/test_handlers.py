@@ -499,11 +499,7 @@ async def test_change_lesson_asks_week_scope(tmp_path, monkeypatch):
     wizard = callbacks(router, "callback_query")["lesson_wizard"]
     start = FakeMessage("Изменить занятие")
     await action(start)
-    labels = [row[0].text for row in start.answers[0][1].inline_keyboard]
-    assert labels[:3] == ["На эту неделю", "На следующую", "Навсегда"]
-    scope = FakeCallback(_button_data(start.answers[0][1], "На эту неделю"))
-    await wizard(scope)
-    picked = FakeCallback(_button_data(scope.message.edits[-1][1], "Соня"))
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
     await wizard(picked)
     first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
     chosen = FakeCallback(first_lesson)
@@ -513,9 +509,15 @@ async def test_change_lesson_asks_week_scope(tmp_path, monkeypatch):
     await wizard(day)
     time_message = FakeMessage("в двенадцать на час")
     await callbacks(router, "message")["free_chat"](time_message)
-    assert "перенесено" in time_message.answers[0][0]
-    assert "Только на эту неделю." in time_message.answers[0][0]
-    assert "id=" not in time_message.answers[0][0]
+    assert "навсегда" in time_message.answers[0][0]
+    labels = [row[0].text for row in time_message.answers[0][1].inline_keyboard]
+    assert labels == ["На эту неделю", "На следующую", "Навсегда"]
+    this_week = time_message.answers[0][1].inline_keyboard[0][0].callback_data
+    selected = FakeCallback(this_week)
+    await callbacks(router, "callback_query")["edit_scope"](selected)
+    assert "перенесено" in selected.message.edits[-1][0]
+    assert "Только на эту неделю." in selected.message.edits[-1][0]
+    assert "id=" not in selected.message.edits[-1][0]
     await db.close()
 
 
@@ -525,9 +527,7 @@ async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
     wizard = callbacks(router, "callback_query")["lesson_wizard"]
     start = FakeMessage("Изменить занятие")
     await action(start)
-    scope = FakeCallback(_button_data(start.answers[0][1], "На следующую"))
-    await wizard(scope)
-    picked = FakeCallback(_button_data(scope.message.edits[-1][1], "Соня"))
+    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
     await wizard(picked)
     first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
     chosen = FakeCallback(first_lesson)
@@ -536,9 +536,12 @@ async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
     await wizard(day)
     time_message = FakeMessage("в двенадцать на час")
     await callbacks(router, "message")["free_chat"](time_message)
-    assert "перенесено" in time_message.answers[0][0]
-    assert "Только на следующую неделю." in time_message.answers[0][0]
-    assert "id=" not in time_message.answers[0][0]
+    next_week = _button_data(time_message.answers[0][1], "На следующую")
+    selected = FakeCallback(next_week)
+    await callbacks(router, "callback_query")["edit_scope"](selected)
+    assert "перенесено" in selected.message.edits[-1][0]
+    assert "Только на следующую неделю." in selected.message.edits[-1][0]
+    assert "id=" not in selected.message.edits[-1][0]
     today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
     next_friday = today - timedelta(days=today.weekday()) + timedelta(days=11)
     original = next(

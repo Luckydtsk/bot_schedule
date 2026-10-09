@@ -35,7 +35,6 @@ from app.bot.lesson_wizard import (
     ACTION_PROMPT,
     ADD,
     ADD_BUTTON,
-    CHANGE,
     CHANGE_BUTTON,
     DELETE,
     DELETE_BUTTON,
@@ -43,7 +42,6 @@ from app.bot.lesson_wizard import (
     lesson_keyboard,
     lessons_list_text,
     student_keyboard,
-    week_scope_keyboard,
     weekday_keyboard,
 )
 from app.calendar.service import CalendarService
@@ -675,13 +673,6 @@ def build_router(
         action = ACTION_BY_TEXT[message.text or ""]
         wizard = LessonWizard(action=action, person=person, step="student")
         wizards[message.from_user.id] = wizard
-        if action == CHANGE:
-            wizard.step = "scope"
-            await message.answer(
-                "На какую неделю перенести занятие?",
-                reply_markup=week_scope_keyboard(),
-            )
-            return
         await show_student_step(message, wizard, edit=False)
 
     @router.callback_query(F.data.startswith("wiz:"))
@@ -700,19 +691,6 @@ def build_router(
         wizard = wizards.get(user_id)
         if wizard is None:
             await callback.answer("Начни заново с кнопки внизу.")
-            return
-        if data.startswith("wiz:scope:"):
-            scope = {
-                "this": SCOPE_THIS_WEEK,
-                "next": SCOPE_NEXT_WEEK,
-                "forever": SCOPE_ALL_WEEKS,
-            }.get(data.removeprefix("wiz:scope:"))
-            if scope is None:
-                await callback.answer()
-                return
-            wizard.scope = scope
-            await show_student_step(callback.message, wizard, edit=True)
-            await callback.answer()
             return
         if data == "wiz:new":
             wizard.step = "name"
@@ -930,21 +908,6 @@ def build_router(
         }
         if weekday is not None:
             args["weekday"] = WEEKDAYS[weekday]
-        if wizard.scope:
-            today = datetime.now(timezone).date()
-            reply = await update_personal_lesson(
-                events,
-                wizard.person,
-                today,
-                current,
-                start_time=parsed.start,
-                end_time=parsed.end,
-                weekday=weekday,
-                scope=wizard.scope,
-            )
-            reset_wizard(message.from_user.id)
-            await message.answer(reply, reply_markup=markup)
-            return
         if is_recurring(current):
             token = secrets.token_hex(4)
             pending_edits[message.from_user.id] = (
