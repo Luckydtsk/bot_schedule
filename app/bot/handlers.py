@@ -62,7 +62,7 @@ from app.people import (
 from app.schedule import sasha as sasha_schedule
 from app.schedule import tutoring
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import WEEKDAYS, describe_event
+from app.schedule.events import WEEKDAYS, added_message
 from app.schedule.models import Lesson
 from app.schedule.mutations import (
     SCOPE_ALL_WEEKS,
@@ -882,7 +882,7 @@ def build_router(
                 subject=lesson_title(wizard.student or text),
             )
             reset_wizard(message.from_user.id)
-            await message.answer(f"Добавил: {describe_event(created)}", reply_markup=markup)
+            await message.answer(added_message(created), reply_markup=markup)
             return
         if wizard.event_id is None or events is None:
             await message.answer("Начни изменение заново кнопкой.", reply_markup=markup)

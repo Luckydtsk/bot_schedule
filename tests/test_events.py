@@ -2,7 +2,14 @@ from datetime import date, time
 
 from app.people import DENIS, SASHA
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import default_seed_rows, event_applies
+from app.schedule.events import (
+    PersonalEvent,
+    added_message,
+    default_seed_rows,
+    event_applies,
+    moved_message,
+    removed_message,
+)
 from app.storage.database import Database
 
 
@@ -50,6 +57,55 @@ async def test_skip_dates_hide_recurring_event_on_that_day(tmp_path):
     assert skipped and not event_applies(skipped, friday)
     assert event_applies(skipped, date(2026, 9, 25))
     await db.close()
+
+
+def test_user_messages_name_day_and_time_without_id():
+    before = PersonalEvent(
+        4,
+        DENIS,
+        4,
+        None,
+        time(16, 50),
+        time(17, 50),
+        7,
+        "Репетиторство с Соней",
+        None,
+        None,
+        None,
+    )
+    after = PersonalEvent(
+        9,
+        DENIS,
+        6,
+        None,
+        time(12, 0),
+        time(13, 0),
+        0,
+        "Репетиторство с Соней",
+        None,
+        None,
+        None,
+    )
+    added = PersonalEvent(
+        1,
+        DENIS,
+        4,
+        None,
+        time(9, 0),
+        time(10, 30),
+        0,
+        "Репетиторство с Кристиной",
+        None,
+        None,
+        None,
+    )
+    assert (
+        moved_message(before, after) == "Репетиторство с Соней перенесено "
+        "с пятницы, 16:50–17:50 на воскресенье, 12:00–13:00."
+    )
+    assert added_message(added) == "Репетиторство с Кристиной добавлено на пятницу, 09:00–10:30."
+    assert removed_message(before) == "Репетиторство с Соней удалено с пятницы, 16:50–17:50."
+    assert "id=" not in moved_message(before, after)
 
 
 def test_seed_rows_cover_both_people():

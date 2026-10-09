@@ -118,6 +118,55 @@ def available_weeks(
     return tuple(sorted({*weeks, *dated}))
 
 
+_DAY_FROM = (
+    "понедельника",
+    "вторника",
+    "среды",
+    "четверга",
+    "пятницы",
+    "субботы",
+    "воскресенья",
+)
+_DAY_TO = (
+    "понедельник",
+    "вторник",
+    "среду",
+    "четверг",
+    "пятницу",
+    "субботу",
+    "воскресенье",
+)
+
+
+def _slot_phrase(event: PersonalEvent, *, outgoing: bool) -> str:
+    names = _DAY_FROM if outgoing else _DAY_TO
+    if event.on_date is not None:
+        day = f"{names[event.on_date.weekday()]}, {event.on_date:%d.%m}"
+    elif event.weekday is not None:
+        day = names[event.weekday]
+    else:
+        day = "без дня"
+    return f"{day}, {event.start_time:%H:%M}–{event.end_time:%H:%M}"
+
+
+def added_message(event: PersonalEvent) -> str:
+    return f"{event.subject} добавлено на {_slot_phrase(event, outgoing=False)}."
+
+
+def removed_message(event: PersonalEvent, note: str = "") -> str:
+    text = f"{event.subject} удалено с {_slot_phrase(event, outgoing=True)}."
+    return f"{text} {note}" if note else text
+
+
+def moved_message(before: PersonalEvent, after: PersonalEvent, note: str = "") -> str:
+    text = (
+        f"{before.subject} перенесено "
+        f"с {_slot_phrase(before, outgoing=True)} "
+        f"на {_slot_phrase(after, outgoing=False)}."
+    )
+    return f"{text} {note}" if note else text
+
+
 def describe_event(event: PersonalEvent) -> str:
     when = (
         event.on_date.isoformat()

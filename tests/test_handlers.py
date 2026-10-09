@@ -459,7 +459,8 @@ async def test_delete_lesson_without_neural_net(tmp_path, monkeypatch):
     first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
     confirm = FakeCallback(first_lesson)
     await wizard(confirm)
-    assert "Удалено" in confirm.message.edits[-1][0]
+    assert "удалено с" in confirm.message.edits[-1][0]
+    assert "id=" not in confirm.message.edits[-1][0]
     after = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
     assert len(after) == len(before) - 1
     await db.close()
@@ -484,7 +485,9 @@ async def test_change_lesson_asks_week_scope(tmp_path, monkeypatch):
     this_week = time_message.answers[0][1].inline_keyboard[0][0].callback_data
     selected = FakeCallback(this_week)
     await callbacks(router, "callback_query")["edit_scope"](selected)
-    assert "Только на эту неделю" in selected.message.edits[-1][0]
+    assert "перенесено" in selected.message.edits[-1][0]
+    assert "Только на эту неделю." in selected.message.edits[-1][0]
+    assert "id=" not in selected.message.edits[-1][0]
     await db.close()
 
 
@@ -504,7 +507,9 @@ async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
     next_week = _button_data(time_message.answers[0][1], "На следующую")
     selected = FakeCallback(next_week)
     await callbacks(router, "callback_query")["edit_scope"](selected)
-    assert "следующую неделю" in selected.message.edits[-1][0]
+    assert "перенесено" in selected.message.edits[-1][0]
+    assert "Только на следующую неделю." in selected.message.edits[-1][0]
+    assert "id=" not in selected.message.edits[-1][0]
     today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
     next_friday = today - timedelta(days=today.weekday()) + timedelta(days=11)
     original = next(

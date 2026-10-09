@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, time
 
 from app.schedule.event_repository import EventRepository
 from app.schedule.events import (
     PersonalEvent,
     date_on_week,
-    describe_event,
     format_skip_dates,
+    moved_message,
     parse_skip_dates,
+    removed_message,
 )
 
 SCOPE_THIS_WEEK = "this_week"
@@ -18,9 +20,9 @@ _ONE_WEEK = {
     SCOPE_THIS_WEEK: 0,
     SCOPE_NEXT_WEEK: 1,
 }
-_SCOPE_LABEL = {
-    SCOPE_THIS_WEEK: "эту неделю",
-    SCOPE_NEXT_WEEK: "следующую неделю",
+_SCOPE_NOTE = {
+    SCOPE_THIS_WEEK: "Только на эту неделю.",
+    SCOPE_NEXT_WEEK: "Только на следующую неделю.",
 }
 
 
@@ -88,7 +90,9 @@ async def update_personal_lesson(
     if subject is not None:
         changes["subject"] = subject
     updated = await events.update(current.id, **changes)
-    return f"Обновлено: {describe_event(updated)}" if updated else "Не удалось обновить."
+    if updated is None:
+        return "Не получилось изменить занятие."
+    return moved_message(current, updated)
 
 
 async def delete_personal_lesson(
@@ -103,10 +107,10 @@ async def delete_personal_lesson(
         skips = set(parse_skip_dates(current.skip_dates))
         skips.add(skip_day)
         await events.update(current.id, skip_dates=format_skip_dates(skips))
-        label = _SCOPE_LABEL[scope]
-        return f"Только на {label} отменено: {describe_event(current)} ({skip_day.isoformat()})."
+        shown = replace(current, on_date=skip_day, weekday=None)
+        return removed_message(shown, _SCOPE_NOTE[scope])
     await events.delete(current.id)
-    return f"Удалено: {describe_event(current)}"
+    return removed_message(current)
 
 
 async def _update_one_week(
@@ -141,8 +145,5 @@ async def _update_one_week(
         parity="always",
     )
     scope = SCOPE_NEXT_WEEK if weeks_ahead else SCOPE_THIS_WEEK
-    label = _SCOPE_LABEL[scope]
-    return (
-        f"Только на {label}: {describe_event(current)} не будет "
-        f"{skip_day.isoformat()}, вместо этого {describe_event(replacement)}."
-    )
+    shown = replace(current, on_date=skip_day, weekday=None)
+    return moved_message(shown, replacement, _SCOPE_NOTE[scope])
