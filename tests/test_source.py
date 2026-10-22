@@ -36,8 +36,17 @@ def test_parse_schedule_without_modified_suffix_uses_api_date():
     assert parsed.modified_date == date(2026, 9, 3)
 
 
+def test_parse_session_week():
+    parsed = parse_schedule_file(item("СЕССИЯ (неделя №9 c 26.10.26) с изм. 22.10.26.xlsx"))
+    assert parsed is not None
+    assert parsed.week_number == 9
+    assert parsed.start_date == date(2026, 10, 26)
+    assert parsed.modified_date == date(2026, 10, 22)
+
+
 def test_ignores_unrelated_xlsx():
     assert parse_schedule_file(item("2 курс факультатив.xlsx")) is None
+    assert parse_schedule_file(item("Расписание занятий БАЗОВОЕ 1 модуль.xlt")) is None
 
 
 def files():
