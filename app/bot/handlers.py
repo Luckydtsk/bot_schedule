@@ -1156,7 +1156,7 @@ def build_router(
             wizard.step = "time"
             day = WEEKDAYS[wizard.weekday] if wizard.weekday is not None else ""
             await message.answer(
-                f"{title}, {day}.\n\nНапиши время начала и длительность, например: в 18:00 на час.",
+                f"{title}, {day}.\n\nНапиши время, например: в 18:00 на час или с 17 до 24.",
                 reply_markup=inline([("Отмена", "wiz:cancel")]),
             )
             return

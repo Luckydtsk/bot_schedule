@@ -47,12 +47,16 @@ def _event(lesson: Lesson, timezone: ZoneInfo, occurrence: int) -> list[str]:
     description = "\n".join(description_parts)
     location = "Онлайн" if lesson.is_online else (lesson.location or "")
     summary = f"{location} — {lesson.subject}" if location else lesson.subject
+    end_day = lesson.date
+    end_clock = lesson.end_time
+    if end_clock < lesson.start_time:
+        end_day += timedelta(days=1)
     lines = [
         "BEGIN:VEVENT",
         f"UID:{lesson_uid(lesson, occurrence)}",
         f"DTSTAMP:{lesson.date:%Y%m%d}T000000Z",
         f"DTSTART;TZID={timezone.key}:{lesson.date:%Y%m%d}T{lesson.start_time:%H%M%S}",
-        f"DTEND;TZID={timezone.key}:{lesson.date:%Y%m%d}T{lesson.end_time:%H%M%S}",
+        f"DTEND;TZID={timezone.key}:{end_day:%Y%m%d}T{end_clock:%H%M%S}",
         f"SUMMARY:{_escape(summary)}",
         f"DESCRIPTION:{_escape(description)}",
         f"LOCATION:{_escape(location)}",

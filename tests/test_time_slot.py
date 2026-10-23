@@ -32,3 +32,17 @@ def test_digital_time_and_weekday():
 
 def test_unknown_phrase_is_none():
     assert parse_time_slot_text("просто перенеси") is None
+
+
+def test_range_until_midnight():
+    slot = parse_time_slot_text("с 17 до 24")
+    assert slot is not None
+    assert slot.start == time(17, 0)
+    assert slot.duration_minutes == 7 * 60
+    assert slot.end == time(0, 0)
+
+    same = parse_time_slot_text("в 17 на 7 часов")
+    assert same is not None
+    assert same.start == time(17, 0)
+    assert same.duration_minutes == 7 * 60
+    assert same.end == time(0, 0)

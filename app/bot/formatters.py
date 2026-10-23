@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, time
 from html import escape
 
+from app.schedule.events import format_interval
 from app.schedule.models import Lesson, LessonChange
 
 WEEKDAYS = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
@@ -37,7 +38,7 @@ def _pair_icon(lesson: Lesson) -> str:
 def format_lesson(lesson: Lesson) -> str:
     if _is_activity(lesson):
         lines = [
-            f"📌  <i>{lesson.start_time:%H:%M} — {lesson.end_time:%H:%M}</i>",
+            f"📌  <i>{format_interval(lesson.start_time, lesson.end_time, ' — ')}</i>",
             f"<b>{escape(lesson.subject)}</b>",
         ]
         if lesson.location and lesson.location != "мероприятие":
@@ -46,7 +47,7 @@ def format_lesson(lesson: Lesson) -> str:
     place = "онлайн" if lesson.is_online else (lesson.location or "ауд. уточняется")
     lines = [
         f"{_pair_icon(lesson)}  "
-        f"<i>{lesson.start_time:%H:%M} — {lesson.end_time:%H:%M}</i>  "
+        f"<i>{format_interval(lesson.start_time, lesson.end_time, ' — ')}</i>  "
         f"<b>{escape(place)}</b>",
         escape(lesson.subject),
     ]
@@ -101,7 +102,8 @@ def format_changes(changes: tuple[LessonChange, ...]) -> str:
             lines = [
                 f"<b>✏️ {escape(after.subject)}</b>",
                 day_title(after.date),
-                f"{_pair_icon(after)}  <i>{after.start_time:%H:%M} — {after.end_time:%H:%M}</i>",
+                f"{_pair_icon(after)}  "
+                f"<i>{format_interval(after.start_time, after.end_time, ' — ')}</i>",
             ]
             labels = {
                 "start_time": "Начало",

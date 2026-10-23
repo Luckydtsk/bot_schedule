@@ -136,6 +136,11 @@ _DAY_TO = (
 )
 
 
+def format_interval(start: time, end: time, separator: str = "–") -> str:
+    end_label = "24:00" if end == time(0, 0) and start != time(0, 0) else f"{end:%H:%M}"
+    return f"{start:%H:%M}{separator}{end_label}"
+
+
 def _slot_phrase(event: PersonalEvent, *, outgoing: bool) -> str:
     names = _DAY_FROM if outgoing else _DAY_TO
     if event.on_date is not None:
@@ -144,7 +149,7 @@ def _slot_phrase(event: PersonalEvent, *, outgoing: bool) -> str:
         day = names[event.weekday]
     else:
         day = "без дня"
-    return f"{day}, {event.start_time:%H:%M}–{event.end_time:%H:%M}"
+    return f"{day}, {format_interval(event.start_time, event.end_time)}"
 
 
 def added_message(event: PersonalEvent) -> str:

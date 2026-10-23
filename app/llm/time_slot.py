@@ -85,11 +85,12 @@ _DURATION_PATTERNS: tuple[tuple[re.Pattern[str], int | None], ...] = (
     (re.compile(r"полчаса"), 30),
     (re.compile(r"два\s*часа"), 120),
     (re.compile(r"три\s*часа"), 180),
-    (re.compile(r"(?:на\s+)?(?:один\s+)?час(?:а|ов)?(?!\w)"), 60),
     (re.compile(r"(\d+[.,]\d+)\s*час"), None),
     (re.compile(r"(\d+)\s*час"), None),
     (re.compile(r"(\d+)\s*мин"), None),
+    (re.compile(r"(?:на\s+)?(?:один\s+)?час(?:а|ов)?(?!\w)"), 60),
 )
+_RANGE = re.compile(r"(?:с\s+)?(\d{1,2})(?:[:.](\d{2}))?\s+до\s+(\d{1,2})(?:[:.](\d{2}))?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,12 +109,40 @@ def parse_time_slot_text(text: str) -> TimeSlot | None:
     raw = " ".join(text.strip().casefold().replace("ё", "е").split())
     if not raw:
         return None
+    ranged = _extract_range(raw)
+    if ranged is not None:
+        return ranged
     weekday = _extract_weekday(raw)
     duration, remainder = _extract_duration(raw)
     start = _extract_start(remainder)
     if start is None or duration is None or duration <= 0:
         return None
     return TimeSlot(start=start, duration_minutes=duration, weekday=weekday)
+
+
+def _extract_range(text: str) -> TimeSlot | None:
+    match = _RANGE.search(text)
+    if match is None:
+        return None
+    start_hour = int(match.group(1))
+    start_minute = int(match.group(2) or 0)
+    end_hour = int(match.group(3))
+    end_minute = int(match.group(4) or 0)
+    start = _valid_time(start_hour, start_minute)
+    if start is None:
+        return None
+    if end_hour == 24 and end_minute == 0:
+        end_minutes = 24 * 60
+    elif _valid_time(end_hour, end_minute) is None:
+        return None
+    else:
+        end_minutes = end_hour * 60 + end_minute
+    duration = end_minutes - (start_hour * 60 + start_minute)
+    if duration <= 0:
+        duration += 24 * 60
+    if duration <= 0 or duration > 24 * 60:
+        return None
+    return TimeSlot(start=start, duration_minutes=duration, weekday=_extract_weekday(text))
 
 
 def _extract_weekday(text: str) -> int | None:

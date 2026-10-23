@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from app.schedule.events import WEEKDAYS, PersonalEvent, date_on_week, event_applies
+from app.schedule.events import (
+    WEEKDAYS,
+    PersonalEvent,
+    date_on_week,
+    event_applies,
+    format_interval,
+)
 
 TUTORING_PREFIX = "Репетиторство"
 _SUBJECT_RE = re.compile(r"^репетиторство\s+(?:со?)\s+(.+)$", re.IGNORECASE)
@@ -106,7 +112,7 @@ def ordered_student_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalE
 
 
 def format_event_choice(event: PersonalEvent) -> str:
-    clock = f"{event.start_time:%H:%M}–{event.end_time:%H:%M}"
+    clock = format_interval(event.start_time, event.end_time)
     if event.on_date is not None:
         day = WEEKDAYS[event.on_date.weekday()]
         return f"({event.on_date.day}) {day} {clock}"
@@ -116,7 +122,7 @@ def format_event_choice(event: PersonalEvent) -> str:
 
 
 def format_event_on(event: PersonalEvent, today: date, weeks_ahead: int = 0) -> str:
-    clock = f"{event.start_time:%H:%M}–{event.end_time:%H:%M}"
+    clock = format_interval(event.start_time, event.end_time)
     when = event.on_date
     if when is None and event.weekday is not None:
         when = date_on_week(event.weekday, today, weeks_ahead)
