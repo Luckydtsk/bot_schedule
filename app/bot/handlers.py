@@ -35,14 +35,17 @@ from app.bot.lesson_wizard import (
     ACTION_PROMPT,
     ADD,
     ADD_BUTTON,
+    CHANGE,
     CHANGE_BUTTON,
     DELETE,
     DELETE_BUTTON,
+    WEEK,
     LessonWizard,
     lesson_keyboard,
     lessons_list_text,
     student_keyboard,
     weekday_keyboard,
+    work_week_keyboard,
 )
 from app.calendar.service import CalendarService
 from app.llm.agent import ASK_SCOPE_PREFIX, ScheduleAssistant, parse_scope_prompt
@@ -62,7 +65,7 @@ from app.people import (
 from app.schedule import sasha as sasha_schedule
 from app.schedule import tutoring
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import WEEKDAYS, added_message
+from app.schedule.events import WEEKDAYS, added_message, date_on_week
 from app.schedule.models import Lesson
 from app.schedule.mutations import (
     SCOPE_ALL_WEEKS,
@@ -76,10 +79,11 @@ from app.schedule.mutations import (
 from app.schedule.service import ScheduleService
 from app.schedule.students import (
     events_for_student,
+    events_on_week,
     format_event_choice,
+    format_event_on,
     is_tutoring_event,
     lesson_title,
-    ordered_student_events,
     students_from_events,
     tutoring_events,
 )
@@ -104,6 +108,22 @@ def main_keyboard(selected: str = DENIS) -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def _weeks_ahead(scope: str | None) -> int | None:
+    if scope == SCOPE_THIS_WEEK:
+        return 0
+    if scope == SCOPE_NEXT_WEEK:
+        return 1
+    return None
+
+
+def _week_phrase(weeks: int | None) -> str:
+    if weeks == 1:
+        return "на следующей неделе"
+    if weeks == 0:
+        return "на текущей неделе"
+    return ""
 
 
 def inline(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
@@ -202,11 +222,23 @@ def build_router(
                 await target.answer(text, reply_markup=main_keyboard(wizard.person))
             return
         items = tutoring_events(await events.list_for(wizard.person))
+        weeks = _weeks_ahead(wizard.scope)
+        if weeks is not None:
+            today = datetime.now(timezone).date()
+            items = events_on_week(items, today, weeks)
         names = students_from_events(items)
         wizard.students = names
         wizard.step = "student"
-        text = ACTION_PROMPT[wizard.action]
-        markup = student_keyboard(names)
+        if not names and weeks is not None:
+            phrase = "следующей" if weeks else "текущей"
+            text = f"На {phrase} неделе занятий с учениками нет."
+            markup = inline([("Отмена", "wiz:cancel")])
+        else:
+            text = ACTION_PROMPT[wizard.action]
+            phrase = _week_phrase(weeks)
+            if phrase:
+                text = text.replace("?", f" {phrase}?")
+            markup = student_keyboard(names)
         if edit:
             await target.edit_text(text, reply_markup=markup)
         else:
@@ -216,14 +248,16 @@ def build_router(
         target: Message, wizard: LessonWizard, telegram_id: int, *, edit: bool
     ) -> None:
         assert events is not None and wizard.student is not None
-        items = ordered_student_events(
-            events_for_student(
-                tutoring_events(await events.list_for(wizard.person)),
-                wizard.student,
-            )
+        today = datetime.now(timezone).date()
+        weeks = _weeks_ahead(wizard.scope)
+        matched = events_for_student(
+            tutoring_events(await events.list_for(wizard.person)),
+            wizard.student,
         )
+        items = events_on_week(matched, today, weeks) if weeks is not None else matched
         if not items:
-            text = f"Занятий с {wizard.student} пока нет. Сначала добавь занятие."
+            phrase = _week_phrase(weeks) or "пока"
+            text = f"Занятий с {wizard.student} {phrase} нет. Сначала добавь занятие."
             reset_wizard(telegram_id)
             if edit:
                 await target.edit_text(text)
@@ -231,8 +265,16 @@ def build_router(
                 await target.answer(text, reply_markup=main_keyboard(wizard.person))
             return
         wizard.step = "lesson"
-        text = lessons_list_text(wizard.student, items)
-        markup = lesson_keyboard(items)
+        labels = (
+            tuple(format_event_on(event, today, weeks) for event in items)
+            if weeks is not None
+            else None
+        )
+        heading = f"Занятия с {wizard.student}"
+        phrase = _week_phrase(weeks)
+        heading = f"{heading} {phrase}:" if phrase else f"{heading}:"
+        text = lessons_list_text(wizard.student, items, labels=labels, heading=heading)
+        markup = lesson_keyboard(items, labels)
         if edit:
             await target.edit_text(text, reply_markup=markup)
         else:
@@ -673,6 +715,18 @@ def build_router(
         action = ACTION_BY_TEXT[message.text or ""]
         wizard = LessonWizard(action=action, person=person, step="student")
         wizards[message.from_user.id] = wizard
+        if action in (CHANGE, DELETE):
+            wizard.step = WEEK
+            today = datetime.now(timezone).date()
+            current = date_on_week(0, today, 0)
+            following = date_on_week(0, today, 1)
+            await message.answer(
+                "С какой неделей работаем?\n\n"
+                f"Текущая: {current:%d.%m}–{current + timedelta(days=6):%d.%m}\n"
+                f"Следующая: {following:%d.%m}–{following + timedelta(days=6):%d.%m}",
+                reply_markup=work_week_keyboard(),
+            )
+            return
         await show_student_step(message, wizard, edit=False)
 
     @router.callback_query(F.data.startswith("wiz:"))
@@ -693,9 +747,29 @@ def build_router(
         if wizard is None:
             await callback.answer("Начни заново с кнопки внизу.")
             return
+        if data == "wiz:drop":
+            if events is None or wizard.event_id is None or wizard.scope is None:
+                await callback.answer("Начни заново с кнопки внизу.")
+                return
+            current = await events.get(wizard.event_id)
+            if current is None or current.person != wizard.person or not is_tutoring_event(current):
+                await callback.answer("Это занятие из основного расписания.")
+                return
+            today = datetime.now(timezone).date()
+            reply = await delete_personal_lesson(events, today, current, scope=wizard.scope)
+            reset_wizard(user_id)
+            await callback.message.edit_text(reply)
+            await callback.answer()
+            return
         if data == "wiz:new":
             wizard.step = "name"
             await callback.message.edit_text("Напиши имя ученика, например Кристина.")
+            await callback.answer()
+            return
+        if data.startswith("wiz:week:"):
+            choice = data.rsplit(":", 1)[-1]
+            wizard.scope = SCOPE_NEXT_WEEK if choice == "next" else SCOPE_THIS_WEEK
+            await show_student_step(callback.message, wizard, edit=True)
             await callback.answer()
             return
         if data.startswith("wiz:stu:"):
@@ -728,33 +802,48 @@ def build_router(
                 await callback.answer("Это занятие из основного расписания.")
                 return
             wizard.event_id = event_id
+            today = datetime.now(timezone).date()
+            weeks = _weeks_ahead(wizard.scope)
+            label = (
+                format_event_on(current, today, weeks)
+                if weeks is not None
+                else format_event_choice(current)
+            )
             if wizard.action == DELETE:
-                token = secrets.token_hex(4)
-                pending_edits[user_id] = (
-                    wizard.person,
-                    "",
-                    token,
-                    {"name": "delete_event", "args": {"event_id": current.id}},
-                )
-                reset_wizard(user_id)
+                if weeks is None:
+                    token = secrets.token_hex(4)
+                    pending_edits[user_id] = (
+                        wizard.person,
+                        "",
+                        token,
+                        {"name": "delete_event", "args": {"event_id": current.id}},
+                    )
+                    reset_wizard(user_id)
+                    await callback.message.edit_text(
+                        f"Убрать {label}?\n\nНа эту неделю, на следующую или навсегда?",
+                        reply_markup=inline(
+                            [
+                                ("На эту неделю", f"edit:scope:this:{token}"),
+                                ("На следующую", f"edit:scope:next:{token}"),
+                                ("Навсегда", f"edit:scope:forever:{token}"),
+                                ("Отмена", "wiz:cancel"),
+                            ]
+                        ),
+                    )
+                    await callback.answer()
+                    return
+                phrase = "со следующей недели" if weeks else "с текущей недели"
                 await callback.message.edit_text(
-                    f"Убрать {format_event_choice(current)}?\n\n"
-                    "На эту неделю, на следующую или навсегда?",
-                    reply_markup=inline(
-                        [
-                            ("На эту неделю", f"edit:scope:this:{token}"),
-                            ("На следующую", f"edit:scope:next:{token}"),
-                            ("Навсегда", f"edit:scope:forever:{token}"),
-                            ("Отмена", "wiz:cancel"),
-                        ]
-                    ),
+                    f"Убрать {label} {phrase}?",
+                    reply_markup=inline([("Убрать", "wiz:drop"), ("Отмена", "wiz:cancel")]),
                 )
                 await callback.answer()
                 return
             wizard.step = "weekday"
+            phrase = _week_phrase(weeks)
+            where = f" {phrase}" if phrase else ""
             await callback.message.edit_text(
-                f"Меняем {format_event_choice(current)} с {wizard.student}.\n\n"
-                "На какой день поставить?",
+                f"Меняем {label} с {wizard.student}{where}.\n\nНа какой день поставить?",
                 reply_markup=weekday_keyboard(),
             )
             await callback.answer()
@@ -926,6 +1015,21 @@ def build_router(
         }
         if weekday is not None:
             args["weekday"] = WEEKDAYS[weekday]
+        if wizard.scope in (SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK):
+            today = datetime.now(timezone).date()
+            reply = await update_personal_lesson(
+                events,
+                wizard.person,
+                today,
+                current,
+                start_time=parsed.start,
+                end_time=parsed.end,
+                weekday=weekday,
+                scope=wizard.scope,
+            )
+            reset_wizard(message.from_user.id)
+            await message.answer(reply, reply_markup=markup)
+            return
         if is_recurring(current):
             token = secrets.token_hex(4)
             pending_edits[message.from_user.id] = (

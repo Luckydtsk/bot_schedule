@@ -77,6 +77,21 @@ async def update_personal_lesson(
             weekday=weekday,
             subject=subject,
         )
+    if current.on_date is not None and scope in _ONE_WEEK:
+        changes: dict[str, object] = {}
+        if start_time is not None:
+            changes["start_time"] = start_time
+        if end_time is not None:
+            changes["end_time"] = end_time
+        if subject is not None:
+            changes["subject"] = subject
+        target = weekday if weekday is not None else current.on_date.weekday()
+        changes["weekday"] = None
+        changes["on_date"] = date_on_week(target, today, _ONE_WEEK[scope])
+        updated = await events.update(current.id, **changes)
+        if updated is None:
+            return "Не получилось изменить занятие."
+        return moved_message(current, updated, _SCOPE_NOTE[scope])
     changes: dict[str, object] = {}
     if start_time is not None:
         changes["start_time"] = start_time

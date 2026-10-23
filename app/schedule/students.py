@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 
-from app.schedule.events import WEEKDAYS, PersonalEvent
+from app.schedule.events import WEEKDAYS, PersonalEvent, date_on_week, event_applies
 
 TUTORING_PREFIX = "Репетиторство"
 _SUBJECT_RE = re.compile(r"^репетиторство\s+(?:со?)\s+(.+)$", re.IGNORECASE)
@@ -76,6 +77,17 @@ def students_from_events(events: tuple[PersonalEvent, ...]) -> tuple[str, ...]:
     return tuple(sorted(names, key=str.casefold))
 
 
+def events_on_week(
+    events: tuple[PersonalEvent, ...],
+    today: date,
+    weeks_ahead: int,
+) -> tuple[PersonalEvent, ...]:
+    monday = date_on_week(0, today, weeks_ahead)
+    days = tuple(monday + timedelta(days=offset) for offset in range(7))
+    visible = tuple(event for event in events if any(event_applies(event, day) for day in days))
+    return ordered_student_events(visible)
+
+
 def ordered_student_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalEvent, ...]:
     def key(event: PersonalEvent) -> tuple[int, int, object]:
         if event.on_date is not None:
@@ -93,3 +105,13 @@ def format_event_choice(event: PersonalEvent) -> str:
     if event.weekday is not None:
         return f"{WEEKDAYS[event.weekday]} {clock}"
     return f"без дня {clock}"
+
+
+def format_event_on(event: PersonalEvent, today: date, weeks_ahead: int = 0) -> str:
+    clock = f"{event.start_time:%H:%M}–{event.end_time:%H:%M}"
+    when = event.on_date
+    if when is None and event.weekday is not None:
+        when = date_on_week(event.weekday, today, weeks_ahead)
+    if when is None:
+        return f"без дня {clock}"
+    return f"({when.day}) {WEEKDAYS[when.weekday()]} {clock}"

@@ -1,10 +1,13 @@
+from dataclasses import replace
 from datetime import date, time
 
 from app.people import DENIS
 from app.schedule.events import PersonalEvent
 from app.schedule.students import (
     events_for_student,
+    events_on_week,
     format_event_choice,
+    format_event_on,
     is_tutoring_event,
     lesson_title,
     ordered_student_events,
@@ -88,3 +91,43 @@ def test_sasha_classes_are_not_tutoring_students():
     assert not is_tutoring_event(college)
     assert tutoring_events((college, lesson)) == (lesson,)
     assert students_from_events(tutoring_events((college, lesson))) == ("Соня",)
+
+
+def test_week_list_shows_only_that_weeks_lessons():
+    today = date(2026, 10, 23)
+    friday = replace(
+        _event(1, 4, time(16, 50), time(17, 50), "Репетиторство с Соней"),
+        skip_dates="2026-10-23",
+    )
+    this_sunday = PersonalEvent(
+        2,
+        DENIS,
+        None,
+        date(2026, 10, 25),
+        time(12, 0),
+        time(13, 0),
+        0,
+        "Репетиторство с Соней",
+        None,
+        None,
+        None,
+    )
+    next_sunday = PersonalEvent(
+        3,
+        DENIS,
+        None,
+        date(2026, 11, 1),
+        time(12, 0),
+        time(13, 0),
+        0,
+        "Репетиторство с Соней",
+        None,
+        None,
+        None,
+    )
+    events = (friday, this_sunday, next_sunday)
+    this_week = events_on_week(events, today, 0)
+    next_week = events_on_week(events, today, 1)
+    assert [item.id for item in this_week] == [2]
+    assert [item.id for item in next_week] == [1, 3]
+    assert format_event_on(friday, today, 1) == "(30) пятница 16:50–17:50"
