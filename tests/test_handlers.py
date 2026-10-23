@@ -568,3 +568,64 @@ async def test_change_lesson_can_apply_only_next_week(tmp_path, monkeypatch):
     assert len(moved) == 1
     assert moved[0].start_time == time(12, 0)
     await db.close()
+
+
+async def test_change_lesson_forever_updates_every_week(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Изменить занятие")
+    await action(start)
+    labels = [row[0].text for row in start.answers[0][1].inline_keyboard]
+    assert labels == ["Текущая неделя", "Следующая неделя", "Навсегда", "Отмена"]
+    week = FakeCallback(_button_data(start.answers[0][1], "Навсегда"))
+    await wizard(week)
+    assert "навсегда" in week.message.edits[-1][0]
+    picked = FakeCallback(_button_data(week.message.edits[-1][1], "Соня"))
+    await wizard(picked)
+    first = picked.message.edits[-1][1].inline_keyboard[0][0]
+    assert first.text.startswith("пятница")
+    chosen = FakeCallback(first.callback_data)
+    await wizard(chosen)
+    assert "навсегда" in chosen.message.edits[-1][0]
+    day = FakeCallback(_button_data(chosen.message.edits[-1][1], "Пт"))
+    await wizard(day)
+    time_message = FakeMessage("в двенадцать на час")
+    await callbacks(router, "message")["free_chat"](time_message)
+    assert "перенесено" in time_message.answers[0][0]
+    assert "Только на" not in time_message.answers[0][0]
+    friday = next(
+        item for item in await repo.list_for(DENIS) if "Соней" in item.subject and item.weekday == 4
+    )
+    assert friday.start_time == time(12, 0)
+    assert friday.on_date is None
+    assert not friday.skip_dates
+    dated = [
+        item for item in await repo.list_for(DENIS) if "Соней" in item.subject and item.on_date
+    ]
+    assert dated == []
+    await db.close()
+
+
+async def test_delete_lesson_forever_removes_it(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    before = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Убрать занятие")
+    await action(start)
+    week = FakeCallback(_button_data(start.answers[0][1], "Навсегда"))
+    await wizard(week)
+    picked = FakeCallback(_button_data(week.message.edits[-1][1], "Соня"))
+    await wizard(picked)
+    first_lesson = picked.message.edits[-1][1].inline_keyboard[0][0].callback_data
+    confirm = FakeCallback(first_lesson)
+    await wizard(confirm)
+    assert "навсегда" in confirm.message.edits[-1][0]
+    removed = FakeCallback("wiz:drop")
+    await wizard(removed)
+    assert "удалено с" in removed.message.edits[-1][0]
+    assert "Только на" not in removed.message.edits[-1][0]
+    after = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
+    assert len(after) == len(before) - 1
+    await db.close()

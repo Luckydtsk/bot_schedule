@@ -84,6 +84,7 @@ from app.schedule.students import (
     format_event_on,
     is_tutoring_event,
     lesson_title,
+    ordered_student_events,
     students_from_events,
     tutoring_events,
 )
@@ -118,11 +119,13 @@ def _weeks_ahead(scope: str | None) -> int | None:
     return None
 
 
-def _week_phrase(weeks: int | None) -> str:
-    if weeks == 1:
+def _scope_phrase(scope: str | None) -> str:
+    if scope == SCOPE_NEXT_WEEK:
         return "на следующей неделе"
-    if weeks == 0:
+    if scope == SCOPE_THIS_WEEK:
         return "на текущей неделе"
+    if scope == SCOPE_ALL_WEEKS:
+        return "навсегда"
     return ""
 
 
@@ -235,7 +238,7 @@ def build_router(
             markup = inline([("Отмена", "wiz:cancel")])
         else:
             text = ACTION_PROMPT[wizard.action]
-            phrase = _week_phrase(weeks)
+            phrase = _scope_phrase(wizard.scope)
             if phrase:
                 text = text.replace("?", f" {phrase}?")
             markup = student_keyboard(names)
@@ -254,10 +257,17 @@ def build_router(
             tutoring_events(await events.list_for(wizard.person)),
             wizard.student,
         )
-        items = events_on_week(matched, today, weeks) if weeks is not None else matched
+        items = (
+            events_on_week(matched, today, weeks)
+            if weeks is not None
+            else ordered_student_events(matched)
+        )
         if not items:
-            phrase = _week_phrase(weeks) or "пока"
-            text = f"Занятий с {wizard.student} {phrase} нет. Сначала добавь занятие."
+            phrase = _scope_phrase(wizard.scope)
+            if phrase and wizard.scope != SCOPE_ALL_WEEKS:
+                text = f"Занятий с {wizard.student} {phrase} нет. Сначала добавь занятие."
+            else:
+                text = f"Занятий с {wizard.student} пока нет. Сначала добавь занятие."
             reset_wizard(telegram_id)
             if edit:
                 await target.edit_text(text)
@@ -271,7 +281,7 @@ def build_router(
             else None
         )
         heading = f"Занятия с {wizard.student}"
-        phrase = _week_phrase(weeks)
+        phrase = _scope_phrase(wizard.scope)
         heading = f"{heading} {phrase}:" if phrase else f"{heading}:"
         text = lessons_list_text(wizard.student, items, labels=labels, heading=heading)
         markup = lesson_keyboard(items, labels)
@@ -723,7 +733,8 @@ def build_router(
             await message.answer(
                 "С какой неделей работаем?\n\n"
                 f"Текущая: {current:%d.%m}–{current + timedelta(days=6):%d.%m}\n"
-                f"Следующая: {following:%d.%m}–{following + timedelta(days=6):%d.%m}",
+                f"Следующая: {following:%d.%m}–{following + timedelta(days=6):%d.%m}\n"
+                "Навсегда — на все недели",
                 reply_markup=work_week_keyboard(),
             )
             return
@@ -768,7 +779,10 @@ def build_router(
             return
         if data.startswith("wiz:week:"):
             choice = data.rsplit(":", 1)[-1]
-            wizard.scope = SCOPE_NEXT_WEEK if choice == "next" else SCOPE_THIS_WEEK
+            wizard.scope = {
+                "next": SCOPE_NEXT_WEEK,
+                "forever": SCOPE_ALL_WEEKS,
+            }.get(choice, SCOPE_THIS_WEEK)
             await show_student_step(callback.message, wizard, edit=True)
             await callback.answer()
             return
@@ -810,7 +824,13 @@ def build_router(
                 else format_event_choice(current)
             )
             if wizard.action == DELETE:
-                if weeks is None:
+                if wizard.scope == SCOPE_ALL_WEEKS:
+                    phrase = "навсегда"
+                elif weeks == 1:
+                    phrase = "со следующей недели"
+                elif weeks == 0:
+                    phrase = "с текущей недели"
+                else:
                     token = secrets.token_hex(4)
                     pending_edits[user_id] = (
                         wizard.person,
@@ -832,7 +852,6 @@ def build_router(
                     )
                     await callback.answer()
                     return
-                phrase = "со следующей недели" if weeks else "с текущей недели"
                 await callback.message.edit_text(
                     f"Убрать {label} {phrase}?",
                     reply_markup=inline([("Убрать", "wiz:drop"), ("Отмена", "wiz:cancel")]),
@@ -840,7 +859,7 @@ def build_router(
                 await callback.answer()
                 return
             wizard.step = "weekday"
-            phrase = _week_phrase(weeks)
+            phrase = _scope_phrase(wizard.scope)
             where = f" {phrase}" if phrase else ""
             await callback.message.edit_text(
                 f"Меняем {label} с {wizard.student}{where}.\n\nНа какой день поставить?",
@@ -1015,7 +1034,7 @@ def build_router(
         }
         if weekday is not None:
             args["weekday"] = WEEKDAYS[weekday]
-        if wizard.scope in (SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK):
+        if wizard.scope in (SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK, SCOPE_ALL_WEEKS):
             today = datetime.now(timezone).date()
             reply = await update_personal_lesson(
                 events,

@@ -56,6 +56,7 @@ def work_week_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Текущая неделя", callback_data="wiz:week:this")],
             [InlineKeyboardButton(text="Следующая неделя", callback_data="wiz:week:next")],
+            [InlineKeyboardButton(text="Навсегда", callback_data="wiz:week:forever")],
             [InlineKeyboardButton(text="Отмена", callback_data="wiz:cancel")],
         ]
     )
