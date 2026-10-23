@@ -160,10 +160,15 @@ async def test_start_and_settings_flows(monkeypatch):
     message = FakeMessage()
     await callbacks(router, "message")["start"](message)
     assert users.saved == (7, 3, "РИС-24-3")
-    assert "Добавить занятие" in message.answers[0][0]
+    assert "Ученики" in message.answers[0][0]
+    assert "Мероприятия" in message.answers[0][0]
     assert "уровень образования" not in message.answers[0][0]
     row = [button.text for button in message.answers[0][1].keyboard[0]]
     assert row == ["Саша", "Денис ✓"]
+    labels = [button.text for row in message.answers[0][1].keyboard for button in row]
+    assert "Профиль" not in labels
+    assert "Ученики" in labels
+    assert "Мероприятия" in labels
     message = FakeMessage()
     await callbacks(router, "message")["settings"](message)
     assert message.deleted == 1
@@ -628,4 +633,93 @@ async def test_delete_lesson_forever_removes_it(tmp_path, monkeypatch):
     assert "Только на" not in removed.message.edits[-1][0]
     after = [item.id for item in await repo.list_for(DENIS) if "Соней" in item.subject]
     assert len(after) == len(before) - 1
+    await db.close()
+
+
+async def test_students_and_events_are_separate_menus(tmp_path, monkeypatch):
+    db, _, router = await _seeded_router(tmp_path, monkeypatch)
+    students = FakeMessage("Ученики")
+    await callbacks(router, "message")["students_menu"](students)
+    student_labels = [button.text for row in students.answers[0][1].keyboard for button in row]
+    assert student_labels == [
+        "Добавить занятие",
+        "Изменить занятие",
+        "Убрать занятие",
+        "Назад",
+    ]
+    events = FakeMessage("Мероприятия")
+    await callbacks(router, "message")["events_menu"](events)
+    event_labels = [button.text for row in events.answers[0][1].keyboard for button in row]
+    assert event_labels == ["Добавить мероприятие", "Убрать мероприятие", "Назад"]
+    await db.close()
+
+
+async def test_add_activity_only_on_chosen_later_week(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["event_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    chat = callbacks(router, "message")["free_chat"]
+    start = FakeMessage("Добавить мероприятие")
+    await action(start)
+    assert "На какую неделю" in start.answers[0][0]
+    week = FakeCallback("wiz:ew:2")
+    await wizard(week)
+    day = FakeCallback("wiz:wd:1")
+    await wizard(day)
+    assert "название" in day.message.edits[-1][0]
+    title = FakeMessage("Собрание старост")
+    await chat(title)
+    time_message = FakeMessage("в 18:00 на час")
+    await chat(time_message)
+    assert "добавлено" in time_message.answers[0][0]
+    assert "id=" not in time_message.answers[0][0]
+    today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
+    monday = today - timedelta(days=today.weekday())
+    target = monday + timedelta(weeks=2, days=1)
+    saved = [item for item in await repo.list_for(DENIS) if item.subject == "Собрание старост"]
+    assert len(saved) == 1
+    assert saved[0].on_date == target
+    assert saved[0].weekday is None
+    assert saved[0].lesson_type == "мероприятие"
+    assert any(item.subject == "Собрание старост" for item in await repo.for_date(DENIS, target))
+    other = monday + timedelta(weeks=3, days=1)
+    assert not any(item.subject == "Собрание старост" for item in await repo.for_date(DENIS, other))
+    menu = FakeMessage("Неделя")
+    await callbacks(router, "message")["week"](menu)
+    labels = [row[0].text for row in menu.answers[0][1].inline_keyboard]
+    later = monday + timedelta(weeks=2)
+    span = f"{later:%d.%m}–{later + timedelta(days=6):%d.%m}"
+    assert span in labels
+    await db.close()
+
+
+async def test_delete_activity_from_its_week(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
+    monday = today - timedelta(days=today.weekday())
+    target = monday + timedelta(weeks=3, days=2)
+    await repo.add(
+        DENIS,
+        weekday=None,
+        on_date=target,
+        start_time=time(18, 0),
+        end_time=time(19, 0),
+        subject="Концерт",
+        lesson_type="мероприятие",
+    )
+    action = callbacks(router, "message")["event_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Убрать мероприятие")
+    await action(start)
+    week = FakeCallback("wiz:ew:3")
+    await wizard(week)
+    first = week.message.edits[-1][1].inline_keyboard[0][0]
+    assert "Концерт" in first.text
+    chosen = FakeCallback(first.callback_data)
+    await wizard(chosen)
+    assert "Убрать" in chosen.message.edits[-1][0]
+    removed = FakeCallback("wiz:drop")
+    await wizard(removed)
+    assert "удалено" in removed.message.edits[-1][0]
+    assert not [item for item in await repo.list_for(DENIS) if item.subject == "Концерт"]
     await db.close()

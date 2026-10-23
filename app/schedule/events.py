@@ -108,8 +108,6 @@ def available_weeks(
 ) -> tuple[date, ...]:
     monday = today - timedelta(days=today.weekday())
     weeks = [monday + timedelta(days=7 * index) for index in range(count)]
-    if any(event.on_date is None and event.weekday is not None for event in events):
-        return tuple(weeks)
     dated = {
         event.on_date - timedelta(days=event.on_date.weekday())
         for event in events

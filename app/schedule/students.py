@@ -45,8 +45,16 @@ def is_tutoring_event(event: PersonalEvent) -> bool:
     )
 
 
+def is_activity_event(event: PersonalEvent) -> bool:
+    return event.lesson_type == "мероприятие" or event.location == "мероприятие"
+
+
 def tutoring_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalEvent, ...]:
     return tuple(event for event in events if is_tutoring_event(event))
+
+
+def activity_events(events: tuple[PersonalEvent, ...]) -> tuple[PersonalEvent, ...]:
+    return tuple(event for event in events if is_activity_event(event))
 
 
 def events_for_student(events: tuple[PersonalEvent, ...], name: str) -> tuple[PersonalEvent, ...]:

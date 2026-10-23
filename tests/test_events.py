@@ -5,6 +5,7 @@ from app.schedule.event_repository import EventRepository
 from app.schedule.events import (
     PersonalEvent,
     added_message,
+    available_weeks,
     default_seed_rows,
     event_applies,
     moved_message,
@@ -112,3 +113,34 @@ def test_seed_rows_cover_both_people():
     rows = default_seed_rows()
     assert {row["person"] for row in rows} == {DENIS, SASHA}
     assert any("sasha:" in str(row["seed_key"]) for row in rows)
+
+
+def test_later_activity_keeps_its_week_next_to_recurring_lessons():
+    today = date(2026, 10, 23)
+    recurring = PersonalEvent(
+        1,
+        DENIS,
+        4,
+        None,
+        time(16, 50),
+        time(17, 50),
+        0,
+        "Репетиторство с Соней",
+        None,
+        None,
+        "репетиторство",
+    )
+    concert = PersonalEvent(
+        2,
+        DENIS,
+        None,
+        date(2026, 11, 11),
+        time(18, 0),
+        time(19, 0),
+        0,
+        "Концерт",
+        None,
+        None,
+        "мероприятие",
+    )
+    assert date(2026, 11, 9) in available_weeks((recurring, concert), today)

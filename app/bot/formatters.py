@@ -13,6 +13,10 @@ def day_title(day: date) -> str:
     return f"{WEEKDAYS[day.weekday()]}, {day:%d.%m.%Y}"
 
 
+def _is_activity(lesson: Lesson) -> bool:
+    return lesson.lesson_type == "мероприятие" or lesson.location == "мероприятие"
+
+
 def _is_tutoring(lesson: Lesson) -> bool:
     return (
         lesson.lesson_type == "репетиторство"
@@ -22,6 +26,8 @@ def _is_tutoring(lesson: Lesson) -> bool:
 
 
 def _pair_icon(lesson: Lesson) -> str:
+    if _is_activity(lesson):
+        return "📌"
     if _is_tutoring(lesson):
         return "🧑‍🏫"
     number = lesson.pair_number
@@ -29,6 +35,14 @@ def _pair_icon(lesson: Lesson) -> str:
 
 
 def format_lesson(lesson: Lesson) -> str:
+    if _is_activity(lesson):
+        lines = [
+            f"📌  <i>{lesson.start_time:%H:%M} — {lesson.end_time:%H:%M}</i>",
+            f"<b>{escape(lesson.subject)}</b>",
+        ]
+        if lesson.location and lesson.location != "мероприятие":
+            lines.append(escape(lesson.location))
+        return "\n".join(lines)
     place = "онлайн" if lesson.is_online else (lesson.location or "ауд. уточняется")
     lines = [
         f"{_pair_icon(lesson)}  "

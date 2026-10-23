@@ -63,6 +63,23 @@ def test_tutoring_uses_its_own_icon():
     assert "0️⃣" not in text
 
 
+def test_activity_uses_its_own_icon():
+    activity = Lesson(
+        "G",
+        date(2026, 9, 2),
+        0,
+        time(18, 0),
+        time(19, 0),
+        "Собрание старост",
+        lesson_type="мероприятие",
+    )
+    text = format_schedule((activity,))
+    assert "📌" in text
+    assert "<b>Собрание старост</b>" in text
+    assert "ауд. уточняется" not in text
+    assert "мероприятие" not in text.casefold()
+
+
 def test_empty_and_safe_split():
     assert format_schedule((), "empty") == "empty"
     chunks = split_messages("a" * 9000)

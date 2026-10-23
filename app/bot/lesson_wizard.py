@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -11,12 +12,21 @@ ADD = "add"
 CHANGE = "change"
 DELETE = "delete"
 WEEK = "week"
+EVENT_ADD = "event_add"
+EVENT_DELETE = "event_delete"
+EVENT_WEEK_COUNT = 8
 
 ADD_BUTTON = "Добавить занятие"
 CHANGE_BUTTON = "Изменить занятие"
 DELETE_BUTTON = "Убрать занятие"
 ADD_STUDENT_BUTTON = "Добавить ученика"
+STUDENTS_BUTTON = "Ученики"
+EVENTS_BUTTON = "Мероприятия"
+BACK_BUTTON = "Назад"
+ADD_EVENT_BUTTON = "Добавить мероприятие"
+DELETE_EVENT_BUTTON = "Убрать мероприятие"
 ACTION_BUTTONS = (ADD_BUTTON, CHANGE_BUTTON, DELETE_BUTTON)
+EVENT_BUTTONS = (ADD_EVENT_BUTTON, DELETE_EVENT_BUTTON)
 ACTION_BY_TEXT = {
     ADD_BUTTON: ADD,
     CHANGE_BUTTON: CHANGE,
@@ -38,6 +48,8 @@ class LessonWizard:
     weekday: int | None = None
     event_id: int | None = None
     scope: str | None = None
+    weeks_ahead: int | None = None
+    title: str | None = None
     students: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -60,6 +72,24 @@ def work_week_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отмена", callback_data="wiz:cancel")],
         ]
     )
+
+
+def upcoming_week_keyboard(today: date, count: int = EVENT_WEEK_COUNT) -> InlineKeyboardMarkup:
+    monday = today - timedelta(days=today.weekday())
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(count):
+        start = monday + timedelta(weeks=index)
+        end = start + timedelta(days=6)
+        span = f"{start:%d.%m}–{end:%d.%m}"
+        if index == 0:
+            label = f"Текущая · {span}"
+        elif index == 1:
+            label = f"Следующая · {span}"
+        else:
+            label = span
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"wiz:ew:{index}")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="wiz:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def weekday_keyboard() -> InlineKeyboardMarkup:
