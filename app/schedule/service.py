@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from app.schedule.models import Lesson, Schedule
+from app.schedule.models import Lesson, Schedule, without_excluded_lessons
 
 
 class ScheduleService:
     def __init__(self, schedule: Schedule | None = None) -> None:
-        self.schedule = schedule or Schedule({}, ())
+        self.schedule = without_excluded_lessons(schedule or Schedule({}, ()))
 
     def replace(self, schedule: Schedule) -> None:
-        self.schedule = schedule
+        self.schedule = without_excluded_lessons(schedule)
 
     def groups(self, course: int) -> tuple[str, ...]:
         return self.schedule.courses.get(course, ())

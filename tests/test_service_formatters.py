@@ -20,6 +20,16 @@ def test_date_and_week_queries():
     )
 
 
+def test_minor_and_military_stay_out_of_the_loaded_schedule():
+    thursday = date(2026, 10, 22)
+    friday = date(2026, 10, 23)
+    minor = Lesson("G", thursday, 1, time(8, 10), time(9, 30), "МАЙНОР")
+    military = Lesson("G", friday, 2, time(9, 40), time(11, 10), "Военная кафедра")
+    kept = Lesson("G", thursday, 2, time(9, 40), time(11, 10), "Машинное обучение")
+    service = ScheduleService(Schedule({1: ("G",)}, (minor, military, kept)))
+    assert [item.subject for item in service.for_week("G", thursday)] == ["Машинное обучение"]
+
+
 def test_week_schedules_are_merged_without_losing_groups():
     first = Schedule({1: ("G",)}, (lesson(),))
     second_lesson = lesson(date(2026, 9, 7))
@@ -61,6 +71,10 @@ def test_tutoring_uses_its_own_icon():
     assert "🧑‍🏫" in text
     assert "▫️" not in text
     assert "0️⃣" not in text
+    assert text.casefold().count("репетиторство") == 1
+    assert "Репетиторство с Кристиной" in text
+    assert "📗" in text
+    assert "<b>репетиторство</b>" not in text.casefold()
 
 
 def test_activity_uses_its_own_icon():

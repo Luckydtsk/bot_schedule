@@ -43,6 +43,26 @@ def keep_group(schedule: Schedule, group: str) -> Schedule:
     return Schedule(courses, schedule.for_group(group))
 
 
+def is_excluded_university_lesson(lesson: Lesson) -> bool:
+    name = lesson.subject.casefold().replace("ё", "е")
+    weekday = lesson.date.weekday()
+    minor = (
+        weekday == 3
+        and lesson.start_time == time(8, 10)
+        and lesson.end_time == time(9, 30)
+        and ("майнор" in name or "майнер" in name)
+    )
+    military = weekday == 4 and "военн" in name and "кафедр" in name
+    return minor or military
+
+
+def without_excluded_lessons(schedule: Schedule) -> Schedule:
+    return Schedule(
+        schedule.courses,
+        tuple(lesson for lesson in schedule.lessons if not is_excluded_university_lesson(lesson)),
+    )
+
+
 def merge_schedules(schedules: tuple[Schedule, ...]) -> Schedule:
     courses: dict[int, list[str]] = {}
     lessons: list[Lesson] = []

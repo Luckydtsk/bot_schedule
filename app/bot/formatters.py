@@ -44,6 +44,13 @@ def format_lesson(lesson: Lesson) -> str:
         if lesson.location and lesson.location != "мероприятие":
             lines.append(escape(lesson.location))
         return "\n".join(lines)
+    if _is_tutoring(lesson):
+        return "\n".join(
+            (
+                f"🧑‍🏫  <i>{format_interval(lesson.start_time, lesson.end_time, ' — ')}</i>",
+                f"{escape(lesson.subject)}  📗",
+            )
+        )
     place = "онлайн" if lesson.is_online else (lesson.location or "ауд. уточняется")
     lines = [
         f"{_pair_icon(lesson)}  "

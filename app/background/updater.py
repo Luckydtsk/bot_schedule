@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.notifications.service import NotificationService
-from app.schedule.models import keep_group, merge_schedules
+from app.schedule.models import keep_group, merge_schedules, without_excluded_lessons
 from app.schedule.parser import ExcelScheduleParser
 from app.schedule.repository import ScheduleRepository
 from app.schedule.service import ScheduleService
@@ -74,11 +74,13 @@ class ScheduleUpdater:
             )
             return False
         old = await self.repository.latest()
-        new = merge_schedules(tuple(self.parser.parse(content) for content in contents))
+        new = without_excluded_lessons(
+            merge_schedules(tuple(self.parser.parse(content) for content in contents))
+        )
         if self.keep_group_name:
             new = keep_group(new, self.keep_group_name)
             if old is not None:
-                old = keep_group(old, self.keep_group_name)
+                old = without_excluded_lessons(keep_group(old, self.keep_group_name))
         current = items[0]
         await self.repository.save(
             " | ".join(item.name for item in items),
