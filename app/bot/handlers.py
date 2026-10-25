@@ -39,11 +39,13 @@ from app.bot.lesson_wizard import (
     BACK_BUTTON,
     CHANGE,
     CHANGE_BUTTON,
+    CHANGE_EVENT_BUTTON,
     DELETE,
     DELETE_BUTTON,
     DELETE_EVENT_BUTTON,
     EVENT_ADD,
     EVENT_BUTTONS,
+    EVENT_CHANGE,
     EVENT_DELETE,
     EVENT_WEEK_COUNT,
     EVENTS_BUTTON,
@@ -75,7 +77,13 @@ from app.people import (
 from app.schedule import sasha as sasha_schedule
 from app.schedule import tutoring
 from app.schedule.event_repository import EventRepository
-from app.schedule.events import WEEKDAYS, added_message, date_on_week, removed_message
+from app.schedule.events import (
+    WEEKDAYS,
+    added_message,
+    date_on_week,
+    moved_message,
+    removed_message,
+)
 from app.schedule.models import Lesson
 from app.schedule.mutations import (
     SCOPE_ALL_WEEKS,
@@ -125,7 +133,8 @@ def main_keyboard(selected: str = DENIS) -> ReplyKeyboardMarkup:
 def section_keyboard(section: str) -> ReplyKeyboardMarkup:
     if section == "events":
         rows = [
-            [KeyboardButton(text=ADD_EVENT_BUTTON), KeyboardButton(text=DELETE_EVENT_BUTTON)],
+            [KeyboardButton(text=ADD_EVENT_BUTTON), KeyboardButton(text=CHANGE_EVENT_BUTTON)],
+            [KeyboardButton(text=DELETE_EVENT_BUTTON)],
             [KeyboardButton(text=BACK_BUTTON)],
         ]
     else:
@@ -849,16 +858,19 @@ def build_router(
             return
         user = await ensure_user(message.from_user.id)
         person = selected_person_of(user)
-        action = EVENT_ADD if message.text == ADD_EVENT_BUTTON else EVENT_DELETE
+        prompts = {
+            EVENT_ADD: "На какую неделю поставить мероприятие?",
+            EVENT_CHANGE: "На какой неделе мероприятие?",
+            EVENT_DELETE: "С какой недели убрать мероприятие?",
+        }
+        action = {
+            ADD_EVENT_BUTTON: EVENT_ADD,
+            CHANGE_EVENT_BUTTON: EVENT_CHANGE,
+        }.get(message.text or "", EVENT_DELETE)
         wizard = LessonWizard(action=action, person=person, step="event_week")
         wizards[message.from_user.id] = wizard
         today = datetime.now(timezone).date()
-        prompt = (
-            "На какую неделю поставить мероприятие?"
-            if action == EVENT_ADD
-            else "С какой недели убрать мероприятие?"
-        )
-        await message.answer(prompt, reply_markup=upcoming_week_keyboard(today))
+        await message.answer(prompts[action], reply_markup=upcoming_week_keyboard(today))
 
     @router.callback_query(F.data.startswith("wiz:"))
     async def lesson_wizard(callback: CallbackQuery) -> None:
@@ -926,7 +938,7 @@ def build_router(
                 await callback.answer("Эта неделя уже недоступна.")
                 return
             wizard.weeks_ahead = weeks_ahead
-            if wizard.action == EVENT_DELETE:
+            if wizard.action in (EVENT_DELETE, EVENT_CHANGE):
                 await show_activity_step(callback.message, wizard, user_id, edit=True)
                 await callback.answer()
                 return
@@ -953,6 +965,15 @@ def build_router(
                 wizard.step = "title"
                 await callback.message.edit_text(
                     f"Мероприятие, {day}.\n\nНапиши название, например: собрание старост.",
+                    reply_markup=inline([("Отмена", "wiz:cancel")]),
+                )
+                await callback.answer()
+                return
+            if wizard.action == EVENT_CHANGE:
+                wizard.step = "time"
+                await callback.message.edit_text(
+                    f"Меняем {wizard.title}, {day}.\n\n"
+                    "Напиши время, например: в 18:00 на час или с 17 до 22.",
                     reply_markup=inline([("Отмена", "wiz:cancel")]),
                 )
                 await callback.answer()
@@ -985,6 +1006,18 @@ def build_router(
                 await callback.message.edit_text(
                     f"Убрать {label}?",
                     reply_markup=inline([("Убрать", "wiz:drop"), ("Отмена", "wiz:cancel")]),
+                )
+                await callback.answer()
+                return
+            if wizard.action == EVENT_CHANGE:
+                if not is_activity_event(current):
+                    await callback.answer("Это не мероприятие.")
+                    return
+                wizard.event_id = event_id
+                wizard.title = current.subject
+                await callback.message.edit_text(
+                    f"Меняем {current.subject}.\n\nНа какой день поставить?",
+                    reply_markup=weekday_keyboard(),
                 )
                 await callback.answer()
                 return
@@ -1207,6 +1240,36 @@ def build_router(
             )
             reset_wizard(message.from_user.id)
             await message.answer(added_message(created), reply_markup=markup)
+            return
+        if wizard.action == EVENT_CHANGE:
+            markup = section_keyboard("events")
+            if weekday is None or wizard.weeks_ahead is None or wizard.event_id is None:
+                await message.answer("Начни изменение мероприятия заново кнопкой.")
+                reset_wizard(message.from_user.id)
+                return
+            if events is None:
+                await message.answer("Мероприятия сейчас недоступны.", reply_markup=markup)
+                return
+            current = await events.get(wizard.event_id)
+            if current is None or current.person != wizard.person or not is_activity_event(current):
+                await message.answer("Мероприятие не найдено.", reply_markup=markup)
+                reset_wizard(message.from_user.id)
+                return
+            today = datetime.now(timezone).date()
+            updated = await events.update(
+                current.id,
+                weekday=None,
+                on_date=date_on_week(weekday, today, wizard.weeks_ahead),
+                start_time=parsed.start,
+                end_time=parsed.end,
+            )
+            reset_wizard(message.from_user.id)
+            reply = (
+                moved_message(current, updated)
+                if updated is not None
+                else "Не получилось изменить мероприятие."
+            )
+            await message.answer(reply, reply_markup=markup)
             return
         if wizard.action == ADD:
             if weekday is None:

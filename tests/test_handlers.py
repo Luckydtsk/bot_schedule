@@ -650,7 +650,12 @@ async def test_students_and_events_are_separate_menus(tmp_path, monkeypatch):
     events = FakeMessage("Мероприятия")
     await callbacks(router, "message")["events_menu"](events)
     event_labels = [button.text for row in events.answers[0][1].keyboard for button in row]
-    assert event_labels == ["Добавить мероприятие", "Убрать мероприятие", "Назад"]
+    assert event_labels == [
+        "Добавить мероприятие",
+        "Изменить мероприятие",
+        "Убрать мероприятие",
+        "Назад",
+    ]
     await db.close()
 
 
@@ -722,4 +727,43 @@ async def test_delete_activity_from_its_week(tmp_path, monkeypatch):
     await wizard(removed)
     assert "удалено" in removed.message.edits[-1][0]
     assert not [item for item in await repo.list_for(DENIS) if item.subject == "Концерт"]
+    await db.close()
+
+
+async def test_change_activity_keeps_the_name_and_moves_the_time(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
+    monday = today - timedelta(days=today.weekday())
+    original = monday + timedelta(weeks=3, days=2)
+    await repo.add(
+        DENIS,
+        weekday=None,
+        on_date=original,
+        start_time=time(18, 0),
+        end_time=time(19, 0),
+        subject="Концерт",
+        lesson_type="мероприятие",
+    )
+    action = callbacks(router, "message")["event_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Изменить мероприятие")
+    await action(start)
+    assert "На какой неделе" in start.answers[0][0]
+    week = FakeCallback("wiz:ew:3")
+    await wizard(week)
+    chosen = FakeCallback(week.message.edits[-1][1].inline_keyboard[0][0].callback_data)
+    await wizard(chosen)
+    assert "На какой день" in chosen.message.edits[-1][0]
+    day = FakeCallback("wiz:wd:3")
+    await wizard(day)
+    time_message = FakeMessage("с 17 до 22")
+    await callbacks(router, "message")["free_chat"](time_message)
+    assert "перенесено" in time_message.answers[0][0]
+    assert "17:00–22:00" in time_message.answers[0][0]
+    saved = [item for item in await repo.list_for(DENIS) if item.subject == "Концерт"]
+    assert len(saved) == 1
+    assert saved[0].on_date == monday + timedelta(weeks=3, days=3)
+    assert saved[0].start_time == time(17, 0)
+    assert saved[0].end_time == time(22, 0)
+    assert not any(item.subject == "Концерт" for item in await repo.for_date(DENIS, original))
     await db.close()
