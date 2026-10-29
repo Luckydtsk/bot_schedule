@@ -123,7 +123,7 @@ def main_keyboard(selected: str = DENIS) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=person_button_label(DENIS, selected)),
             ],
             [KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")],
-            [KeyboardButton(text="Неделя")],
+            [KeyboardButton(text="Неделя"), KeyboardButton(text="Профиль")],
             [KeyboardButton(text=STUDENTS_BUTTON), KeyboardButton(text=EVENTS_BUTTON)],
         ],
         resize_keyboard=True,

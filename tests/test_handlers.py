@@ -166,7 +166,7 @@ async def test_start_and_settings_flows(monkeypatch):
     row = [button.text for button in message.answers[0][1].keyboard[0]]
     assert row == ["Саша", "Денис ✓"]
     labels = [button.text for row in message.answers[0][1].keyboard for button in row]
-    assert "Профиль" not in labels
+    assert "Профиль" in labels
     assert "Ученики" in labels
     assert "Мероприятия" in labels
     message = FakeMessage()
