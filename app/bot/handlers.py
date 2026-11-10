@@ -261,13 +261,13 @@ def build_router(
             return
         items = tutoring_events(await events.list_for(wizard.person))
         weeks = _weeks_ahead(wizard.scope)
-        if weeks is not None:
+        if weeks is not None and wizard.action != ADD:
             today = datetime.now(timezone).date()
             items = events_on_week(items, today, weeks)
         names = students_from_events(items)
         wizard.students = names
         wizard.step = "student"
-        if not names and weeks is not None:
+        if not names and weeks is not None and wizard.action != ADD:
             phrase = "следующей" if weeks else "текущей"
             text = f"На {phrase} неделе занятий с учениками нет."
             markup = inline([("Отмена", "wiz:cancel")])
@@ -837,7 +837,7 @@ def build_router(
         action = ACTION_BY_TEXT[message.text or ""]
         wizard = LessonWizard(action=action, person=person, step="student")
         wizards[message.from_user.id] = wizard
-        if action in (CHANGE, DELETE):
+        if action in (ADD, CHANGE, DELETE):
             wizard.step = WEEK
             today = datetime.now(timezone).date()
             current = date_on_week(0, today, 0)
@@ -1083,7 +1083,9 @@ def build_router(
     ) -> None:
         if wizard.action == ADD:
             wizard.step = "weekday"
-            text = f"В какой день занятие с {wizard.student}?"
+            phrase = _scope_phrase(wizard.scope)
+            when = f" {phrase}" if phrase else ""
+            text = f"В какой день занятие с {wizard.student}{when}?"
             markup = weekday_keyboard()
             if edit:
                 await target.edit_text(text, reply_markup=markup)
@@ -1281,6 +1283,16 @@ def build_router(
                     reply_markup=markup,
                 )
                 return
+            on_date = None
+            note = ""
+            if wizard.scope in (SCOPE_THIS_WEEK, SCOPE_NEXT_WEEK):
+                today = datetime.now(timezone).date()
+                on_date = date_on_week(weekday, today, _weeks_ahead(wizard.scope) or 0)
+                note = (
+                    " Только на эту неделю."
+                    if wizard.scope == SCOPE_THIS_WEEK
+                    else " Только на следующую неделю."
+                )
             created = await add_personal_lesson(
                 events,
                 wizard.person,
@@ -1288,9 +1300,10 @@ def build_router(
                 start_time=parsed.start,
                 end_time=parsed.end,
                 subject=lesson_title(wizard.student or text),
+                on_date=on_date,
             )
             reset_wizard(message.from_user.id)
-            await message.answer(added_message(created), reply_markup=markup)
+            await message.answer(added_message(created) + note, reply_markup=markup)
             return
         if wizard.event_id is None or events is None:
             await message.answer("Начни изменение заново кнопкой.", reply_markup=markup)

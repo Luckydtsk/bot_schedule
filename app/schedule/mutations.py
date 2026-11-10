@@ -38,13 +38,14 @@ async def add_personal_lesson(
     start_time: time,
     end_time: time,
     subject: str,
+    on_date: date | None = None,
     location: str | None = "репетиторство",
     lesson_type: str | None = "репетиторство",
 ) -> PersonalEvent:
     return await events.add(
         person,
-        weekday=weekday,
-        on_date=None,
+        weekday=None if on_date is not None else weekday,
+        on_date=on_date,
         start_time=start_time,
         end_time=end_time,
         subject=subject,

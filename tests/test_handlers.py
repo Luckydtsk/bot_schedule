@@ -448,7 +448,9 @@ async def test_sasha_buttons_ignore_her_main_schedule(tmp_path, monkeypatch):
     )
     message = FakeMessage("Добавить занятие")
     await callbacks(router, "message")["lesson_action"](message)
-    labels = [row[0].text for row in message.answers[0][1].inline_keyboard]
+    forever = FakeCallback(_button_data(message.answers[0][1], "Навсегда"))
+    await callbacks(router, "callback_query")["lesson_wizard"](forever)
+    labels = [row[0].text for row in forever.message.edits[-1][1].inline_keyboard]
     assert labels == ["Добавить ученика", "Отмена"]
     await db.close()
 
@@ -459,9 +461,13 @@ async def test_add_lesson_with_time_phrase(tmp_path, monkeypatch):
     wizard = callbacks(router, "callback_query")["lesson_wizard"]
     start = FakeMessage("Добавить занятие")
     await action(start)
-    assert "С кем добавить" in start.answers[0][0]
-    assert "Добавить ученика" in [row[0].text for row in start.answers[0][1].inline_keyboard]
-    picked = FakeCallback(_button_data(start.answers[0][1], "Соня"))
+    assert "С какой неделей" in start.answers[0][0]
+    week = FakeCallback(_button_data(start.answers[0][1], "Навсегда"))
+    await wizard(week)
+    assert "С кем добавить" in week.message.edits[-1][0]
+    assert "навсегда" in week.message.edits[-1][0]
+    assert "Добавить ученика" in [row[0].text for row in week.message.edits[-1][1].inline_keyboard]
+    picked = FakeCallback(_button_data(week.message.edits[-1][1], "Соня"))
     await wizard(picked)
     friday = FakeCallback(_button_data(picked.message.edits[-1][1], "Пт"))
     await wizard(friday)
@@ -475,6 +481,35 @@ async def test_add_lesson_with_time_phrase(tmp_path, monkeypatch):
     assert items[0].weekday == 4
     assert items[0].on_date is None
     assert items[0].end_time == time(10, 30)
+    await db.close()
+
+
+async def test_add_lesson_can_be_only_this_week(tmp_path, monkeypatch):
+    db, repo, router = await _seeded_router(tmp_path, monkeypatch)
+    action = callbacks(router, "message")["lesson_action"]
+    wizard = callbacks(router, "callback_query")["lesson_wizard"]
+    start = FakeMessage("Добавить занятие")
+    await action(start)
+    week = FakeCallback(_button_data(start.answers[0][1], "Текущая неделя"))
+    await wizard(week)
+    picked = FakeCallback(_button_data(week.message.edits[-1][1], "Соня"))
+    await wizard(picked)
+    assert "на текущей неделе" in picked.message.edits[-1][0]
+    friday = FakeCallback(_button_data(picked.message.edits[-1][1], "Пт"))
+    await wizard(friday)
+    time_message = FakeMessage("в девять полтора часа")
+    await callbacks(router, "message")["free_chat"](time_message)
+    assert "Только на эту неделю." in time_message.answers[0][0]
+    today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).date()
+    this_friday = today - timedelta(days=today.weekday()) + timedelta(days=4)
+    created = next(
+        item
+        for item in await repo.list_for(DENIS)
+        if item.subject == lesson_title("Соня") and item.on_date == this_friday
+    )
+    assert created.weekday is None
+    assert created.start_time == time(9, 0)
+    assert created.end_time == time(10, 30)
     await db.close()
 
 
