@@ -15,7 +15,7 @@ FILE_RE = re.compile(
     r"^(?:Расписание\s+занятий|Сессия).*?неделя\s*№\s*(?P<week>\d+).*?[cс]\s*"
     r"(?P<start>\d{1,2}\.\d{1,2}\.\d{2,4})\s*\)"
     r"(?:\s*[cс]\s+изм\.?\s*(?P<modified>\d{1,2}\.\d{1,2}\.\d{2,4}))?"
-    r"\s*\.xlsx$",
+    r"\s*\.xlsx?$",
     re.I,
 )
 
@@ -70,7 +70,7 @@ def parse_schedule_file(item: dict[str, Any]) -> ScheduleFile | None:
 
 def select_schedule_file(files: list[ScheduleFile], today: date) -> ScheduleFile:
     if not files:
-        raise ScheduleFileNotFound("No weekly .xlsx schedule files found")
+        raise ScheduleFileNotFound("No weekly schedule files found")
     containing = [
         item for item in files if item.start_date <= today <= item.start_date + timedelta(days=6)
     ]

@@ -6,9 +6,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from openpyxl import load_workbook
+import xlrd
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.worksheet.worksheet import Worksheet
+from xlrd.sheet import Cell
+from xlrd.xldate import xldate_as_datetime
 
 from app.schedule.models import Lesson, Schedule
 
@@ -128,9 +131,7 @@ def parse_lesson_text(
 
 class ExcelScheduleParser:
     def parse(self, source: str | Path | bytes | BinaryIO) -> Schedule:
-        stream: str | Path | BinaryIO
-        stream = BytesIO(source) if isinstance(source, bytes) else source
-        workbook = load_workbook(stream, data_only=True)
+        workbook = _open_workbook(source)
         courses: dict[int, tuple[str, ...]] = {}
         lessons: list[Lesson] = []
         for sheet in workbook.worksheets:
@@ -184,3 +185,46 @@ class ExcelScheduleParser:
             if found:
                 return row, found
         raise ScheduleParseError(f"No group header found in sheet {sheet.title!r}")
+
+
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0"
+
+
+def _open_workbook(source: str | Path | bytes | BinaryIO) -> Workbook:
+    if isinstance(source, bytes) and source.startswith(_XLS_MAGIC):
+        return _workbook_from_xls(source)
+    stream: str | Path | BinaryIO = BytesIO(source) if isinstance(source, bytes) else source
+    return load_workbook(stream, data_only=True)
+
+
+def _workbook_from_xls(data: bytes) -> Workbook:
+    book = xlrd.open_workbook(file_contents=data, formatting_info=True)
+    workbook = Workbook()
+    for index, sheet in enumerate(book.sheets()):
+        target = workbook.active if index == 0 else workbook.create_sheet()
+        assert target is not None
+        target.title = sheet.name[:31]
+        for row in range(sheet.nrows):
+            for column in range(sheet.ncols):
+                value = _xls_value(book, sheet.cell(row, column))
+                if value not in (None, ""):
+                    target.cell(row + 1, column + 1, value)
+        for top, bottom, left, right in sheet.merged_cells:
+            if bottom > top and right > left:
+                target.merge_cells(
+                    start_row=top + 1,
+                    start_column=left + 1,
+                    end_row=bottom,
+                    end_column=right,
+                )
+    return workbook
+
+
+def _xls_value(book: xlrd.Book, cell: Cell) -> object:
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        return xldate_as_datetime(cell.value, book.datemode)
+    if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_ERROR, xlrd.XL_CELL_BLANK}:
+        return None
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    return cell.value

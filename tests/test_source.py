@@ -44,6 +44,16 @@ def test_parse_session_week():
     assert parsed.modified_date == date(2026, 10, 22)
 
 
+def test_parse_old_excel_week_file():
+    parsed = parse_schedule_file(
+        item("Расписание занятий (неделя №2 c 09.11.2026) с изм. 10.11.26.xls")
+    )
+    assert parsed is not None
+    assert parsed.week_number == 2
+    assert parsed.start_date == date(2026, 11, 9)
+    assert parsed.modified_date == date(2026, 11, 10)
+
+
 def test_ignores_unrelated_xlsx():
     assert parse_schedule_file(item("2 курс факультатив.xlsx")) is None
     assert parse_schedule_file(item("Расписание занятий БАЗОВОЕ 1 модуль.xlt")) is None
